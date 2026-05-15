@@ -12,14 +12,13 @@ from typing import Any, Callable
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
 
 from engine import (
-    STATE_DB,
     TEXT_ONLY_TEMPLATE,
     TurkishContentRequired,
     _emit,
     already_in_queue,
     already_posted,
     cdp_is_available,
-    init_db,
+    db_session,
     normalize_url,
     prepare_post_payload,
     read_panel_config,
@@ -340,53 +339,50 @@ def enqueue_x_quote_post(
     key = normalize_url(tweet_url)
     age_limit = max_age_hours if max_age_hours is not None else x_watch_max_age_hours(cfg)
 
-    own = conn is None
-    if own:
-        conn = sqlite3.connect(STATE_DB)
-        init_db(conn)
-    try:
-        if tweet.get("pinned"):
-            _mark_x_seen(conn, tweet_id, handle, tweet_url)
-            _emit(log, f"@{handle}: sabitlenmiş gönderi atlandı.")
-            return 0
-        age_h = _tweet_age_hours(tweet_id)
-        if age_h is not None and age_h > age_limit:
-            _mark_x_seen(conn, tweet_id, handle, tweet_url)
-            _emit(
-                log,
-                f"@{handle}: eski gönderi atlandı ({age_h:.0f} saat, sınır {age_limit:.0f} saat).",
+    if conn is None:
+        with db_session() as c:
+            return enqueue_x_quote_post(
+                tweet, log=log, conn=c, max_age_hours=max_age_hours
             )
-            return 0
-        if _x_seen(conn, tweet_id) or already_posted(conn, key) or already_in_queue(conn, key):
-            return 0
-        try:
-            title_tr, body = prepare_post_payload(
-                tweet_url,
-                f"@{handle}: {text[:200]}",
-                text,
-                template,
-                log,
-                conn=conn,
-            )
-        except TurkishContentRequired as ex:
-            _emit(log, f"@{handle} atlandı: {ex}")
-            return 0
-
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO post_queue (url, title, body, quote_url, post_kind) "
-            "VALUES (?, ?, ?, ?, 'x_quote')",
-            (key, f"@{handle} · {title_tr}", body, tweet_url),
-        )
-        conn.commit()
-        if cur.rowcount == 1:
-            _mark_x_seen(conn, tweet_id, handle, tweet_url)
-            conn.commit()
-            _emit(log, f"X alıntı kuyruğa: @{handle} — {title_tr[:55]}")
-            return 1
+    if tweet.get("pinned"):
+        _mark_x_seen(conn, tweet_id, handle, tweet_url)
+        _emit(log, f"@{handle}: sabitlenmiş gönderi atlandı.")
         return 0
-    finally:
-        if own and conn:
-            conn.close()
+    age_h = _tweet_age_hours(tweet_id)
+    if age_h is not None and age_h > age_limit:
+        _mark_x_seen(conn, tweet_id, handle, tweet_url)
+        _emit(
+            log,
+            f"@{handle}: eski gönderi atlandı ({age_h:.0f} saat, sınır {age_limit:.0f} saat).",
+        )
+        return 0
+    if _x_seen(conn, tweet_id) or already_posted(conn, key) or already_in_queue(conn, key):
+        return 0
+    try:
+        title_tr, body = prepare_post_payload(
+            tweet_url,
+            f"@{handle}: {text[:200]}",
+            text,
+            template,
+            log,
+            conn=conn,
+        )
+    except TurkishContentRequired as ex:
+        _emit(log, f"@{handle} atlandı: {ex}")
+        return 0
+
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO post_queue (url, title, body, quote_url, post_kind) "
+        "VALUES (?, ?, ?, ?, 'x_quote')",
+        (key, f"@{handle} · {title_tr}", body, tweet_url),
+    )
+    conn.commit()
+    if cur.rowcount == 1:
+        _mark_x_seen(conn, tweet_id, handle, tweet_url)
+        conn.commit()
+        _emit(log, f"X alıntı kuyruğa: @{handle} — {title_tr[:55]}")
+        return 1
+    return 0
 
 
 def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
@@ -412,8 +408,6 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
 
     enqueued = 0
     max_age = x_watch_max_age_hours(cfg)
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
     try:
         with x_browser_page(headless=False, new_tab=True) as (page, _):
             for handle in accounts:
@@ -428,22 +422,18 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                     posts = _fetch_syndication(handle, limit=5)
                 if not posts:
                     continue
-                if not _handle_has_baseline(conn, handle):
-                    _baseline_mark_posts(conn, posts, log=log, handle=handle)
-                    conn.commit()
-                    continue
+                with db_session() as conn:
+                    if not _handle_has_baseline(conn, handle):
+                        _baseline_mark_posts(conn, posts, log=log, handle=handle)
+                        conn.commit()
+                        continue
                 for post in posts:
                     if enqueued >= cap:
                         break
-                    n = enqueue_x_quote_post(
-                        post, log=log, conn=conn, max_age_hours=max_age
-                    )
+                    n = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
                     enqueued += n
-        conn.commit()
     except Exception as ex:
         _emit(log, f"X hesap tarama hatası: {ex}")
-    finally:
-        conn.close()
     if enqueued:
         _emit(log, f"X takip: {enqueued} yeni alıntı kuyruğa eklendi.")
     return enqueued

@@ -680,7 +680,27 @@ def open_x_login_tab(log: Callable[[str], None] | None = None) -> str:
     )
 
 
+_db_lock = threading.Lock()
+
+
+@contextmanager
+def db_session() -> Iterator[sqlite3.Connection]:
+    """Panel + zamanlayıcı eşzamanlı erişimde database locked önlenir."""
+    with _db_lock:
+        conn = sqlite3.connect(str(STATE_DB), timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=30000")
+        init_db(conn)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         "CREATE TABLE IF NOT EXISTS posted (url TEXT PRIMARY KEY, title TEXT, created_at TEXT DEFAULT (datetime('now')))"
     )
@@ -1243,33 +1263,34 @@ def resolve_topic_hashtags(
     cache_url: str | None = None,
     force_refresh: bool = False,
 ) -> str:
-    own = False
     if conn is None:
-        conn = sqlite3.connect(STATE_DB)
-        init_db(conn)
-        own = True
-    try:
-        key = normalize_url(cache_url or "")
-        if key and not force_refresh:
-            cached = _summary_cache_get_hashtags(conn, key)
-            if cached:
-                ctx = f"{(title or '').strip()} {(summary or '').strip()}"
-                tokens = [p.lstrip("#") for p in cached.split() if p.strip()]
-                refined = _format_hashtags(tokens, context=ctx)
-                if refined and refined != cached:
-                    _summary_cache_set_hashtags(conn, key, refined)
-                    conn.commit()
-                return refined or cached
-        line = openai_topic_hashtags(title, summary, log)
-        if not line:
-            line = heuristic_topic_hashtags(title, summary)
-        if key and line:
-            _summary_cache_set_hashtags(conn, key, line)
-            conn.commit()
-        return line
-    finally:
-        if own:
-            conn.close()
+        with db_session() as c:
+            return resolve_topic_hashtags(
+                title,
+                summary,
+                log,
+                conn=c,
+                cache_url=cache_url,
+                force_refresh=force_refresh,
+            )
+    key = normalize_url(cache_url or "")
+    if key and not force_refresh:
+        cached = _summary_cache_get_hashtags(conn, key)
+        if cached:
+            ctx = f"{(title or '').strip()} {(summary or '').strip()}"
+            tokens = [p.lstrip("#") for p in cached.split() if p.strip()]
+            refined = _format_hashtags(tokens, context=ctx)
+            if refined and refined != cached:
+                _summary_cache_set_hashtags(conn, key, refined)
+                conn.commit()
+            return refined or cached
+    line = openai_topic_hashtags(title, summary, log)
+    if not line:
+        line = heuristic_topic_hashtags(title, summary)
+    if key and line:
+        _summary_cache_set_hashtags(conn, key, line)
+        conn.commit()
+    return line
 
 
 def openai_summarize_news_line(
@@ -1324,55 +1345,57 @@ def resolve_turkish_title_summary(
     force_refresh: bool = False,
 ) -> tuple[str, str]:
     """Türkçe başlık + özet; uluslararası kaynaklarda OpenAI zorunlu."""
-    own_conn = False
     if conn is None:
-        conn = sqlite3.connect(STATE_DB)
-        init_db(conn)
-        own_conn = True
-    try:
-        key = normalize_url(cache_url or "")
-        if key and force_refresh:
-            _summary_cache_clear(conn, key)
-        elif key:
-            hit = _summary_cache_get(conn, key)
-            if hit:
-                return hit
-        t = (title or "").strip()
-        ex = strip_html(excerpt or "")
-        cap = summary_max_chars(template)
-        if looks_likely_turkish(t) and (not ex or looks_likely_turkish(ex) or len(ex) < 40):
-            summary = synthesize_summary(title, excerpt, log, template=template)
-            if summary and not looks_likely_english(summary):
-                out = (t, summary)
-                if key:
-                    _summary_cache_set(conn, key, out[0], out[1])
-                    conn.commit()
-                return out
-        bundle = openai_turkish_bundle(title, excerpt, log, max_chars=cap)
-        if not bundle or looks_likely_english(bundle[1]):
-            bundle = openai_turkish_bundle(title, excerpt, log, max_chars=cap, strict=True)
-        if bundle and not looks_likely_english(bundle[1]):
-            if key:
-                _summary_cache_set(conn, key, bundle[0], bundle[1])
-                conn.commit()
-            return bundle
-        if looks_likely_turkish(t):
-            summary = heuristic_news_line(title, excerpt, max_chars=cap)
-            if summary and not looks_likely_english(summary):
-                out = (t, summary)
-                if key:
-                    _summary_cache_set(conn, key, out[0], out[1])
-                    conn.commit()
-                return out
-        load_dotenv()
-        if not (os.environ.get("OPENAI_API_KEY") or "").strip():
-            raise TurkishContentRequired(
-                "İngilizce kaynak için .env içinde OPENAI_API_KEY gerekli."
+        with db_session() as c:
+            return resolve_turkish_title_summary(
+                title,
+                excerpt,
+                log,
+                template=template,
+                conn=c,
+                cache_url=cache_url,
+                force_refresh=force_refresh,
             )
-        raise TurkishContentRequired("Türkçe özet üretilemedi; log kayıtlarına bakın.")
-    finally:
-        if own_conn:
-            conn.close()
+    key = normalize_url(cache_url or "")
+    if key and force_refresh:
+        _summary_cache_clear(conn, key)
+    elif key:
+        hit = _summary_cache_get(conn, key)
+        if hit:
+            return hit
+    t = (title or "").strip()
+    ex = strip_html(excerpt or "")
+    cap = summary_max_chars(template)
+    if looks_likely_turkish(t) and (not ex or looks_likely_turkish(ex) or len(ex) < 40):
+        summary = synthesize_summary(title, excerpt, log, template=template)
+        if summary and not looks_likely_english(summary):
+            out = (t, summary)
+            if key:
+                _summary_cache_set(conn, key, out[0], out[1])
+                conn.commit()
+            return out
+    bundle = openai_turkish_bundle(title, excerpt, log, max_chars=cap)
+    if not bundle or looks_likely_english(bundle[1]):
+        bundle = openai_turkish_bundle(title, excerpt, log, max_chars=cap, strict=True)
+    if bundle and not looks_likely_english(bundle[1]):
+        if key:
+            _summary_cache_set(conn, key, bundle[0], bundle[1])
+            conn.commit()
+        return bundle
+    if looks_likely_turkish(t):
+        summary = heuristic_news_line(title, excerpt, max_chars=cap)
+        if summary and not looks_likely_english(summary):
+            out = (t, summary)
+            if key:
+                _summary_cache_set(conn, key, out[0], out[1])
+                conn.commit()
+            return out
+    load_dotenv()
+    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+        raise TurkishContentRequired(
+            "İngilizce kaynak için .env içinde OPENAI_API_KEY gerekli."
+        )
+    raise TurkishContentRequired("Türkçe özet üretilemedi; log kayıtlarına bakın.")
 
 
 def prepare_post_payload(
@@ -1943,29 +1966,21 @@ def already_in_queue(conn: sqlite3.Connection, url: str) -> bool:
 
 def _url_pipeline_state() -> tuple[set[str], dict[str, int]]:
     """Paylaşılmış URL'ler ve kuyruktaki url -> queue id."""
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         posted = {str(r[0]) for r in conn.execute("SELECT url FROM posted")}
         queued: dict[str, int] = {}
         for r in conn.execute("SELECT url, id FROM post_queue"):
             queued[str(r[0])] = int(r[1])
         return posted, queued
-    finally:
-        conn.close()
 
 
 def _queue_preview_by_url() -> dict[str, tuple[str, str]]:
     """Kuyruktaki url -> (başlık, gövde) — panel önizlemesi için."""
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         out: dict[str, tuple[str, str]] = {}
         for url, title, body in conn.execute("SELECT url, title, body FROM post_queue"):
             out[str(url)] = (str(title or ""), str(body or ""))
         return out
-    finally:
-        conn.close()
 
 
 def _body_to_preview_excerpt(body: str, *, max_len: int = 220) -> str:
@@ -1998,11 +2013,9 @@ def build_rss_preview(
     cfg = read_panel_config()
     template = str(cfg.get("post_template", TEXT_ONLY_TEMPLATE))
 
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
     items: list[dict[str, Any]] = []
     preview_ai_budget = 14
-    try:
+    with db_session() as conn:
         for link, title, excerpt in fetch_entries(feed_urls):
             if len(items) >= limit:
                 break
@@ -2060,8 +2073,6 @@ def build_rss_preview(
                 }
             )
         conn.commit()
-    finally:
-        conn.close()
     return items
 
 
@@ -2094,9 +2105,7 @@ def enqueue_article_by_url(
     feeds = effective_feeds(None)
     target_key = normalize_url(raw)
 
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         if already_posted(conn, target_key):
             _emit(log, "Bu haber zaten yayınlanmış.")
             return 0
@@ -2129,8 +2138,6 @@ def enqueue_article_by_url(
             return 0
         _emit(log, "Haber RSS listesinde bulunamadı; önce listeyi yenileyin.")
         return 0
-    finally:
-        conn.close()
 
 
 def enqueue_next_unposted(
@@ -2141,9 +2148,7 @@ def enqueue_next_unposted(
     """Paylaşılmamış ve kuyrukta olmayan en güncel 1 haberi hazırlayıp post_queue tablosuna ekler. Dönüş: 1 veya 0."""
     cfg = read_panel_config()
     template = str(cfg.get("post_template", "{title}\n{link}"))
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         for link, title, excerpt in fetch_entries(feed_urls):
             if not link:
                 continue
@@ -2173,17 +2178,13 @@ def enqueue_next_unposted(
                 return 1
         _emit(log, "Kuyruğa eklenecek yeni haber yok.")
         return 0
-    finally:
-        conn.close()
 
 
 def preview_next_enqueue_post(feed_urls: list[str]) -> str | None:
     """Kuyruğa bir sonraki eklenecek haberin hazır metnini döndürür (eklemez)."""
     cfg = read_panel_config()
     template = str(cfg.get("post_template", "{title}\n{link}"))
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         for link, title, excerpt in fetch_entries(feed_urls):
             if not link:
                 continue
@@ -2195,8 +2196,6 @@ def preview_next_enqueue_post(feed_urls: list[str]) -> str | None:
             _title_tr, body = _prepare_post_for_entry(link, title, excerpt, template, None)
             return body
         return None
-    finally:
-        conn.close()
 
 
 def rebuild_post_queue_bodies(
@@ -2212,10 +2211,8 @@ def rebuild_post_queue_bodies(
         if link:
             url_meta[normalize_url(link)] = (title, excerpt)
 
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
     n = 0
-    try:
+    with db_session() as conn:
         cur = conn.execute("SELECT id, url, title FROM post_queue ORDER BY id ASC")
         for qid, url, title in cur.fetchall():
             key = normalize_url(str(url))
@@ -2235,15 +2232,11 @@ def rebuild_post_queue_bodies(
         conn.commit()
         if n and log:
             _emit(log, f"Kuyruk haber üslubuyla yenilendi: {n} kayıt.")
-    finally:
-        conn.close()
     return n
 
 
 def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         cur = conn.execute(
             "SELECT id, url, title, body, created_at, quote_url, post_kind "
             "FROM post_queue ORDER BY id ASC LIMIT ?",
@@ -2270,25 +2263,17 @@ def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
                 }
             )
         return rows
-    finally:
-        conn.close()
 
 
 def delete_post_queue_item(row_id: int) -> bool:
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         cur = conn.execute("DELETE FROM post_queue WHERE id = ?", (row_id,))
         conn.commit()
         return cur.rowcount > 0
-    finally:
-        conn.close()
 
 
 def peek_queue_head() -> tuple[int, str, str, str, str] | None:
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-    try:
+    with db_session() as conn:
         cur = conn.execute(
             "SELECT id, url, title, body, quote_url FROM post_queue ORDER BY id ASC LIMIT 1"
         )
@@ -2302,8 +2287,6 @@ def peek_queue_head() -> tuple[int, str, str, str, str] | None:
             str(row[3] or ""),
             str(row[4] or ""),
         )
-    finally:
-        conn.close()
 
 
 def publish_one_from_queue(
@@ -2320,65 +2303,58 @@ def publish_one_from_queue(
     cfg = read_panel_config()
     destination = cfg.get("destination", "x_browser")
 
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-
-    def _remove_from_queue() -> None:
-        conn.execute("DELETE FROM post_queue WHERE id = ?", (qid,))
-        conn.commit()
-
-    try:
-        if destination == "file":
-            try:
-                append_outbox(body)
-            except OSError as ex:
-                _emit(log, "Dosyaya yazılamadı: " + str(ex))
-                return 2
+    def _finalize_success() -> None:
+        with db_session() as conn:
             mark_posted(conn, key_url, title)
-            _remove_from_queue()
-            _emit(log, "Dosya kuyruğuna yazıldı (gönderim kuyruğundan): " + str(OUTBOX_PATH))
-            return 1
+            conn.execute("DELETE FROM post_queue WHERE id = ?", (qid,))
+            conn.commit()
 
-        if destination == "discord_webhook":
-            wh = (cfg.get("discord_webhook_url") or os.environ.get("DISCORD_WEBHOOK_URL", "")).strip()
-            if not wh:
-                _emit(log, "Discord webhook URL yok.")
-                return 2
-            try:
-                post_discord_webhook(wh, body)
-            except Exception as ex:
-                _emit(log, "Discord gönderimi başarısız: " + str(ex))
-                return 2
-            mark_posted(conn, key_url, title)
-            _remove_from_queue()
-            _emit(log, "Discord'a gönderildi (kuyruk): " + key_url)
-            return 1
-
-        text_x = clip_for_publish(body)
+    if destination == "file":
         try:
-            if (quote_url or "").strip():
-                post_quote_tweet_browser(quote_url.strip(), text_x, log=log)
-            else:
-                post_tweet_browser(text_x, log=log)
-        except ManualPostPending:
-            _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
-            return 3
-        except PlaywrightTimeout as ex:
-            _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
+            append_outbox(body)
+        except OSError as ex:
+            _emit(log, "Dosyaya yazılamadı: " + str(ex))
             return 2
-        except Exception as ex:
-            _emit(log, "Gönderim hatası: " + str(ex))
-            return 2
-
-        mark_posted(conn, key_url, title)
-        _remove_from_queue()
-        if (quote_url or "").strip():
-            _emit(log, "Alıntı tweet yayınlandı: " + quote_url)
-        else:
-            _emit(log, "Tweet gönderildi (kuyruk): " + key_url)
+        _finalize_success()
+        _emit(log, "Dosya kuyruğuna yazıldı (gönderim kuyruğundan): " + str(OUTBOX_PATH))
         return 1
-    finally:
-        conn.close()
+
+    if destination == "discord_webhook":
+        wh = (cfg.get("discord_webhook_url") or os.environ.get("DISCORD_WEBHOOK_URL", "")).strip()
+        if not wh:
+            _emit(log, "Discord webhook URL yok.")
+            return 2
+        try:
+            post_discord_webhook(wh, body)
+        except Exception as ex:
+            _emit(log, "Discord gönderimi başarısız: " + str(ex))
+            return 2
+        _finalize_success()
+        _emit(log, "Discord'a gönderildi (kuyruk): " + key_url)
+        return 1
+
+    text_x = clip_for_publish(body)
+    try:
+        if (quote_url or "").strip():
+            post_quote_tweet_browser(quote_url.strip(), text_x, log=log)
+        else:
+            post_tweet_browser(text_x, log=log)
+    except ManualPostPending:
+        _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
+        return 3
+    except PlaywrightTimeout as ex:
+        _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
+        return 2
+    except Exception as ex:
+        _emit(log, "Gönderim hatası: " + str(ex))
+        return 2
+
+    _finalize_success()
+    if (quote_url or "").strip():
+        _emit(log, "Alıntı tweet yayınlandı: " + quote_url)
+    else:
+        _emit(log, "Tweet gönderildi (kuyruk): " + key_url)
+    return 1
 
 
 def run_once(
@@ -2392,9 +2368,6 @@ def run_once(
     destination = cfg.get("destination", "x_browser")
     template = str(cfg.get("post_template", "{title}\n{link}"))
 
-    conn = sqlite3.connect(STATE_DB)
-    init_db(conn)
-
     entries = fetch_entries(feed_urls)
     posted_count = 0
 
@@ -2402,12 +2375,13 @@ def run_once(
         if not link:
             continue
         key_url = normalize_url(link)
-        if already_posted(conn, key_url):
-            continue
+        with db_session() as conn:
+            if already_posted(conn, key_url):
+                continue
 
         try:
             title_tr, text_raw = prepare_post_payload(
-                link, title, excerpt, template, log, conn=conn
+                link, title, excerpt, template, log
             )
         except TurkishContentRequired as ex:
             _emit(log, str(ex))
@@ -2424,9 +2398,9 @@ def run_once(
                 append_outbox(text_raw)
             except OSError as ex:
                 _emit(log, "Dosyaya yazılamadı: " + str(ex))
-                conn.close()
                 return 1
-            mark_posted(conn, key_url, title_tr)
+            with db_session() as conn:
+                mark_posted(conn, key_url, title_tr)
             posted_count += 1
             _emit(log, "Kuyruğa yazıldı: " + str(OUTBOX_PATH))
             break
@@ -2435,15 +2409,14 @@ def run_once(
             wh = (cfg.get("discord_webhook_url") or os.environ.get("DISCORD_WEBHOOK_URL", "")).strip()
             if not wh:
                 _emit(log, "Discord webhook URL yok (ayar veya DISCORD_WEBHOOK_URL).")
-                conn.close()
                 return 1
             try:
                 post_discord_webhook(wh, text_raw)
             except Exception as ex:
                 _emit(log, "Discord gönderimi başarısız: " + str(ex))
-                conn.close()
                 return 1
-            mark_posted(conn, key_url, title_tr)
+            with db_session() as conn:
+                mark_posted(conn, key_url, title_tr)
             posted_count += 1
             _emit(log, "Discord'a gönderildi: " + key_url)
             break
@@ -2453,19 +2426,17 @@ def run_once(
             post_tweet_browser(text_x, log=log)
         except PlaywrightTimeout as ex:
             _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
-            conn.close()
             return 1
         except Exception as ex:
             _emit(log, "Gönderim hatası: " + str(ex))
-            conn.close()
             return 1
 
-        mark_posted(conn, key_url, title_tr)
+        with db_session() as conn:
+            mark_posted(conn, key_url, title_tr)
         posted_count += 1
         _emit(log, "Tweet gönderildi (tarayıcı): " + key_url)
         break
 
-    conn.close()
     if posted_count == 0:
         _emit(log, "Yeni haber yok veya tümü daha önce paylaşılmış.")
     return 0
