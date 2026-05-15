@@ -1053,11 +1053,72 @@ def _sanitize_hashtag_token(raw: str) -> str:
     return s[0].upper() + s[1:] if len(s) > 1 else s.upper()
 
 
-def _format_hashtags(tags: list[str]) -> str:
+def _ascii_fold(s: str) -> str:
+    t = (s or "").lower()
+    for a, b in (
+        ("ı", "i"),
+        ("ğ", "g"),
+        ("ü", "u"),
+        ("ş", "s"),
+        ("ö", "o"),
+        ("ç", "c"),
+        ("â", "a"),
+        ("î", "i"),
+    ):
+        t = t.replace(a, b)
+    return t
+
+
+def _refine_hashtag_token(token: str, context: str) -> str:
+    """Uzun Türkçe birleşik etiketleri kısalt; ticker ve olay adı kullan."""
+    if not token:
+        return ""
+    blob = _ascii_fold(context)
+    low = _ascii_fold(token)
+
+    if low.startswith("rune") and len(low) > 4:
+        return "RUNE"
+    if low == "rune" or (low.startswith("rune") and "rune" in blob):
+        return "RUNE"
+
+    if "thorchain" in low and "hack" in low:
+        return "ThorchainHack"
+    if ("thorchain" in blob or "thor chain" in blob) and "hack" in blob:
+        if low in ("hack", "hacks", "kriptohack", "kripto") or "hack" in low:
+            return "ThorchainHack"
+
+    m = re.match(r"^([A-Za-z]{2,10})(.+)$", token)
+    if m:
+        base, rest = m.group(1), _ascii_fold(m.group(2))
+        junk = (
+            "degerkaybi",
+            "degerkayb",
+            "kaybi",
+            "kayb",
+            "degeri",
+            "fiyati",
+            "fiyat",
+            "yukseldi",
+            "dustu",
+            "haber",
+            "son24",
+        )
+        if rest and any(j in rest for j in junk):
+            if base.upper() in ("RUNE", "BTC", "ETH", "SOL", "BNB", "XRP", "USDT", "USDC"):
+                return base.upper()
+            return base[0].upper() + base[1:] if len(base) > 1 else base.upper()
+
+    return token
+
+
+def _format_hashtags(tags: list[str], *, context: str = "") -> str:
     out: list[str] = []
     seen: set[str] = set()
+    ctx = context or ""
     for t in tags:
         token = _sanitize_hashtag_token(t)
+        if ctx:
+            token = _refine_hashtag_token(token, ctx)
         key = token.lower()
         if token and key not in seen:
             seen.add(key)
@@ -1068,6 +1129,8 @@ def _format_hashtags(tags: list[str]) -> str:
 
 
 _HASHTAG_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
+    (("thorchain", "thor chain"), "ThorchainHack"),
+    (("rune",), "RUNE"),
     (("bitcoin", "btc", "satoshi"), "Bitcoin"),
     (("ethereum", "eth", "vitalik"), "Ethereum"),
     (("tether", "usdt", "usdc", "stablecoin", "stable coin"), "Tether"),
@@ -1080,15 +1143,21 @@ _HASHTAG_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
 
 def heuristic_topic_hashtags(title: str, summary: str) -> str:
     blob = f"{title} {summary}".lower()
+    ctx = f"{title} {summary}"
     tags: list[str] = []
+    if ("thorchain" in blob or "thor chain" in blob) and "hack" in blob:
+        tags.append("ThorchainHack")
+    if "rune" in blob and len(tags) < HASHTAG_COUNT:
+        tags.append("RUNE")
     for keys, tag in _HASHTAG_KEYWORDS:
         if any(k in blob for k in keys):
-            tags.append(tag)
+            if tag not in tags:
+                tags.append(tag)
         if len(tags) >= HASHTAG_COUNT:
             break
     if len(tags) < HASHTAG_COUNT:
         tags.append("Haber" if looks_likely_turkish(summary or title) else "News")
-    return _format_hashtags(tags)
+    return _format_hashtags(tags, context=ctx)
 
 
 def _parse_hashtag_response(raw: str) -> list[str]:
@@ -1122,11 +1191,12 @@ def openai_topic_hashtags(
     model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     system = (
         f"Konuya uygun tam {HASHTAG_COUNT} X (Twitter) hashtag öner. "
-        "Yanıtı KESİNLİKLE şu satırlarla ver:\n"
+        "Yanıtı KESİNLİKLE şu satırlarle ver:\n"
         "ETIKET1: (tek kelime, # yok, boşluksuz, en fazla 30 karakter)\n"
         f"ETIKET2: (aynı kurallar)\n"
-        "Türkçe veya yaygın İngilizce; metinde geçen ana varlık/konuya uygun olsun; "
-        "çok genel (#Haber, #News) etiketlerinden kaçın."
+        "Kurallar: kısa İngilizce CamelCase; coin ticker varsa sadece ticker (RUNE, BTC, ETH). "
+        "Olay etiketi: ThorchainHack gibi proje+olay (THORChainHack değil, RUNEdeğerkaybı gibi "
+        "Türkçe birleşik uzun kelimeler YASAK). Çok genel (#Haber, #News) kullanma."
     )
     payload: dict[str, Any] = {
         "model": model,
@@ -1155,7 +1225,8 @@ def openai_topic_hashtags(
         with urllib.request.urlopen(req, timeout=45) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
         out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-        line = _format_hashtags(_parse_hashtag_response(out))
+        ctx = f"{(title or '').strip()} {(summary or '').strip()}"
+        line = _format_hashtags(_parse_hashtag_response(out), context=ctx)
         return line if line.count("#") >= 1 else None
     except Exception as ex:
         if log:
@@ -1182,7 +1253,13 @@ def resolve_topic_hashtags(
         if key and not force_refresh:
             cached = _summary_cache_get_hashtags(conn, key)
             if cached:
-                return cached
+                ctx = f"{(title or '').strip()} {(summary or '').strip()}"
+                tokens = [p.lstrip("#") for p in cached.split() if p.strip()]
+                refined = _format_hashtags(tokens, context=ctx)
+                if refined and refined != cached:
+                    _summary_cache_set_hashtags(conn, key, refined)
+                    conn.commit()
+                return refined or cached
         line = openai_topic_hashtags(title, summary, log)
         if not line:
             line = heuristic_topic_hashtags(title, summary)
