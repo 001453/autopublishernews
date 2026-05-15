@@ -1122,8 +1122,43 @@ _CANONICAL_TAG_ALIASES: dict[str, str] = {
     "news": "KriptoPara",
 }
 
+_CRYPTO_CONTEXT_HINTS: tuple[str, ...] = (
+    "kripto",
+    "crypto",
+    "cryptocurrency",
+    "bitcoin",
+    "ethereum",
+    "blockchain",
+    "defi",
+    "nft",
+    "token",
+    "altcoin",
+    "mica",
+    "zondacrypto",
+    "binance",
+    "coinbase",
+    "kraken",
+    "ftx",
+    "borsasi",
+    "crypto exchange",
+    "kripto borsa",
+    "stablecoin",
+    "thorchain",
+    "tether",
+    "usdt",
+    "btc",
+    "eth",
+    "web3",
+    "cuzdan",
+    "wallet",
+    "madencilik",
+    "mining",
+)
+
 # Öncelik: önce marka/konu, sonra genel kategori.
 _TOPIC_PRIMARY_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("mica", "markets in crypto-assets"), "KriptoPara"),
+    (("zondacrypto", "kripto borsa", "crypto exchange", "kripto borsasi"), "KriptoPara"),
     (("tether", "usdt", "usdc", "usd tether"), "Tether"),
     (("thorchain", "thor chain"), "Thorchain"),
     (("binance", " bnb"), "Binance"),
@@ -1137,10 +1172,12 @@ _TOPIC_PRIMARY_RULES: list[tuple[tuple[str, ...], str]] = [
     (("defi", "decentralized finance", "likidite"), "DeFi"),
     (("nft", "non-fungible"), "NFT"),
     (("sec ", "cftc", "regulasyon", "regulation", "komisyon"), "Regulasyon"),
-    (("fed ", "faiz", "enflasyon", "merkez bank", "dolar"), "Ekonomi"),
-    (("borsa", "nasdaq", "hisse", "wall street"), "Borsa"),
-    (("kripto", "crypto", "altcoin", "token", "coin"), "KriptoPara"),
+    (("fed ", "faiz orani", "faiz", "enflasyon", "merkez bank"), "Ekonomi"),
+    (("nasdaq", "hisse senedi", "hisse", "wall street", "borsa istanbul"), "Borsa"),
+    (("kripto", "crypto", "altcoin", "token", " coin"), "KriptoPara"),
 ]
+
+_SKIP_IF_CRYPTO_PRIMARY = frozenset({"Ekonomi", "Borsa"})
 
 _TOPIC_ASSET_RULES: list[tuple[tuple[str, ...], str]] = [
     (("bitcoin", " btc"), "Bitcoin"),
@@ -1160,7 +1197,13 @@ def _refine_hashtag_token(token: str, context: str) -> str:
         return ""
     low = _ascii_fold(token)
     if low in _CANONICAL_TAG_ALIASES:
-        return _CANONICAL_TAG_ALIASES[low]
+        canon = _CANONICAL_TAG_ALIASES[low]
+        if canon == "Ekonomi" and _has_crypto_context(_ascii_fold(context)):
+            return "KriptoPara"
+        return canon
+
+    if low == "ekonomi" and _has_crypto_context(_ascii_fold(context)):
+        return "KriptoPara"
 
     if low.startswith("rune") and len(low) > 4:
         return "RUNE"
@@ -1185,15 +1228,25 @@ def _refine_hashtag_token(token: str, context: str) -> str:
     return token
 
 
+def _has_crypto_context(blob: str) -> bool:
+    return any(h in blob for h in _CRYPTO_CONTEXT_HINTS)
+
+
 def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
     """Konuya uygun 1–2 kısa etiket: KriptoPara, Blockchain, Tether, Bitcoin…"""
     blob = _ascii_fold(f"{title} {summary}")
     tags: list[str] = []
+    crypto_ctx = _has_crypto_context(blob)
 
     for patterns, tag in _TOPIC_PRIMARY_RULES:
+        if crypto_ctx and tag in _SKIP_IF_CRYPTO_PRIMARY:
+            continue
         if any(p in blob for p in patterns):
             tags.append(tag)
             break
+
+    if crypto_ctx and not tags:
+        tags.append("KriptoPara")
 
     if len(tags) < HASHTAG_COUNT:
         for patterns, tag in _TOPIC_ASSET_RULES:
@@ -1208,6 +1261,9 @@ def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
             if tag not in tags and any(p in blob for p in patterns):
                 tags.append(tag)
                 break
+
+    if crypto_ctx and tags == ["Regulasyon"] and len(tags) < HASHTAG_COUNT:
+        tags.append("KriptoPara")
 
     if not tags:
         tags.append("KriptoPara")
