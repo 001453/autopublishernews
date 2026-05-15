@@ -444,6 +444,12 @@ async def api_login_window() -> dict[str, Any]:
         msg = await asyncio.to_thread(job)
     except RuntimeError as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
+    except Exception as ex:
+        append_log("X giriş sekmesi: " + str(ex))
+        raise HTTPException(
+            status_code=500,
+            detail="X giriş sekmesi açılamadı. Bot Chrome: .\\scripts\\start_bot_chrome.ps1 -ForceRestart",
+        ) from ex
     append_log(msg)
     return {"ok": True, "message": msg}
 

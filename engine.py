@@ -570,22 +570,52 @@ def ensure_bot_chrome_cdp(
     return False
 
 
+# Bot Chrome'da aynı anda tek Playwright işlemi (yayın + X tarama çakışmasın).
+_x_browser_lock = threading.Lock()
+
+
+def _playwright_goto_soft(page: Any, url: str, *, timeout: int = 90_000) -> None:
+    """X yönlendirmelerinde ERR_ABORTED sık görülür; sekme açıksa yeterli."""
+    try:
+        page.goto(url, wait_until="commit", timeout=timeout)
+    except Exception as ex:
+        low = str(ex).lower()
+        if "err_aborted" in low or "interrupted" in low or "target closed" in low:
+            try:
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+            return
+        raise
+
+
+def _bot_cdp_open_tab(url: str) -> bool:
+    """Bot Chrome'da giriş/yayın sekmesi aç; kapatma."""
+    target = (url or "").strip()
+    if not target or not bot_cdp_is_available():
+        return False
+    if open_cdp_new_tab(target, endpoint=bot_cdp_url()):
+        return True
+    try:
+        with _x_browser_lock:
+            with sync_playwright() as p:
+                browser = _connect_cdp_browser(p, bot_cdp_url())
+                if not browser.contexts:
+                    return False
+                page = browser.contexts[0].new_page()
+                _playwright_goto_soft(page, target)
+        return True
+    except Exception:
+        return False
+
+
 def open_bot_profile_new_tab(url: str) -> bool:
     """Açık bot Chrome (CDP) üzerinde yeni sekme — ikinci pencere açmaz."""
-    target = (url or "").strip()
-    if not target:
-        return False
-    if not bot_cdp_is_available():
-        return False
-    return open_cdp_new_tab(target, endpoint=bot_cdp_url())
+    return _bot_cdp_open_tab(url)
 
 
 def _connect_cdp_browser(p: Any, endpoint: str) -> Any:
     return p.chromium.connect_over_cdp(endpoint)
-
-
-# Bot Chrome'da aynı anda tek Playwright işlemi (yayın + X tarama çakışmasın).
-_x_browser_lock = threading.Lock()
 
 
 @contextmanager
@@ -659,24 +689,37 @@ def open_x_login_tab(log: Callable[[str], None] | None = None) -> str:
         if cdp_is_available():
             if open_cdp_new_tab(login_url):
                 return "CDP: Mevcut Chrome'da yeni X sekmesi açıldı."
-            with x_browser_page(headless=False, new_tab=True) as (page, _):
-                page.goto(login_url, wait_until="domcontentloaded", timeout=90_000)
-            return "CDP: Chrome'da yeni X giriş sekmesi açıldı."
+            try:
+                with _x_browser_lock:
+                    with sync_playwright() as p:
+                        browser = _connect_cdp_browser(p, chrome_cdp_url())
+                        page = browser.contexts[0].new_page()
+                        _playwright_goto_soft(page, login_url)
+                return "CDP: Chrome'da yeni X giriş sekmesi açıldı."
+            except Exception as ex:
+                raise RuntimeError("X giriş sekmesi açılamadı: " + str(ex)) from ex
         if open_chrome_new_tab(login_url):
             return "Chrome'da yeni sekme açıldı — giriş yapın (CDP kapalı, tam otomasyon yok)."
         raise RuntimeError("Chrome bulunamadı veya sekme açılamadı.")
     prof = profile_dir()
     ensure_bot_chrome_cdp(login_url=login_url, log=log)
-    if open_bot_profile_new_tab(login_url):
-        return (
-            f"Açık bot Chrome'da yeni giriş sekmesi açıldı ({prof}). "
-            "X'e giriş yapın; oturum x_profile içinde kalır."
+    if not bot_cdp_is_available():
+        raise RuntimeError(
+            "Bot Chrome CDP kapalı. Terminalde: .\\scripts\\start_bot_chrome.ps1 -ForceRestart"
         )
-    with x_browser_page(headless=False, new_tab=True) as (page, _):
-        page.goto(login_url, wait_until="domcontentloaded", timeout=90_000)
-    return (
-        f"Bot Chrome'da giriş sekmesi ({prof}). X'e giriş yapın; "
-        "sonraki işlemler aynı pencerede yeni sekme açar."
+    if _bot_cdp_open_tab(login_url):
+        return (
+            f"Bot Chrome'da X giriş sekmesi açıldı ({prof}). "
+            "Giriş yapın; oturum x_profile içinde kalır."
+        )
+    if open_chrome_new_tab(login_url):
+        return (
+            f"Chrome'da giriş sekmesi açıldı ({prof}). "
+            "Bot CDP yoksa önce start_bot_chrome.ps1 çalıştırın."
+        )
+    raise RuntimeError(
+        "X giriş sekmesi açılamadı. Bot Chrome açık mı? "
+        ".\\scripts\\start_bot_chrome.ps1 -ForceRestart"
     )
 
 
