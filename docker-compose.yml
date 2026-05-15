@@ -1,0 +1,22 @@
+services:
+  x-news-bot:
+    build: .
+    container_name: x-news-bot
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      X_PROFILE_DIR: /app/data/x_profile
+      PANEL_CONFIG_PATH: /app/data/panel_config.json
+      AUTO_START_SCHEDULER: "1"
+      PANEL_HOST: "0.0.0.0"
+      USE_EXISTING_CHROME: "0"
+      BROWSER_CHANNEL: chromium
+      HEADLESS: "0"
+      BOT_CDP_PORT: "9333"
+    volumes:
+      - ./data:/app/data
+    shm_size: "1gb"

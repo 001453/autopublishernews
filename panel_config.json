@@ -1,0 +1,38 @@
+{
+  "feeds": [
+    "https://koinmedya.com/feed/",
+    "https://www.coinkolik.com/feed/",
+    "https://www.btchaber.com/feed/",
+    "https://tr.investing.com/rss/news_301.rss",
+    "https://www.bitcoinsistemi.com/feed/",
+    "https://www.coinotag.com/feed/",
+    "https://koinbulteni.com/feed",
+    "https://coin-turk.com/feed/",
+    "https://cointelegraph.com/rss",
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://www.theblock.co/rss.xml",
+    "https://decrypt.co/feed",
+    "https://u.today/rss",
+    "https://cryptopotato.com/feed/",
+    "https://ambcrypto.com/feed/",
+    "https://news.bitcoin.com/feed/"
+  ],
+  "poll_interval_minutes": 30,
+  "publish_interval_minutes": 15,
+  "use_post_queue": true,
+  "destination": "x_browser",
+  "post_template": "📌 {summary}\n\n{hashtags}",
+  "discord_webhook_url": "",
+  "x_watch_enabled": true,
+  "x_watch_accounts": [
+    "https://x.com/tetherwallet",
+    "https://x.com/qvac",
+    "https://x.com/usat",
+    "https://x.com/tethergold",
+    "https://x.com/USDT0_to",
+    "https://x.com/hadron_tether",
+    "https://x.com/tether",
+    "https://x.com/keet_io"
+  ],
+  "x_watch_max_per_poll": 1
+}

@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #1d9bf0;
+      --danger: #f4212e;
+      --ok: #00ba7c;
+      --warn: #f5a623;
+      --mono: ui-monospace, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; min-height: 100vh; }
+    header { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    h1 { font-size: 1.15rem; font-weight: 600; margin: 0; }
+    .badge { font-size: 0.8rem; padding: 0.2rem 0.55rem; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+    .badge.on { border-color: var(--ok); color: var(--ok); }
+    main { max-width: 1200px; margin: 0 auto; padding: 1.25rem 1.5rem 2rem; display: grid; gap: 1.25rem; }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; }
+    section h2 { margin: 0 0 0.75rem; font-size: 0.95rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .pipeline { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 0.5rem; }
+    @media (max-width: 800px) { .pipeline { grid-template-columns: 1fr; } }
+    .pipe-step { background: #121a26; border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem 0.75rem; font-size: 0.85rem; }
+    .pipe-step strong { display: block; color: var(--text); margin-bottom: 0.2rem; }
+    .pipe-step span { color: var(--muted); font-size: 0.78rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    button { cursor: pointer; border: 1px solid var(--border); background: #243044; color: var(--text); padding: 0.45rem 0.85rem; border-radius: 8px; font-size: 0.9rem; }
+    button:hover { background: #2c3c54; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.sm { padding: 0.25rem 0.5rem; font-size: 0.78rem; }
+    button.danger { border-color: #5c2228; color: #ffb4b8; background: #2a1518; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    textarea, input[type="number"], select, input[type="text"] {
+      padding: 0.45rem 0.55rem; border-radius: 8px; border: 1px solid var(--border);
+      background: #121a26; color: var(--text); font-size: 0.9rem;
+    }
+    textarea { width: 100%; min-height: 100px; resize: vertical; font-family: var(--mono); font-size: 0.82rem; }
+    input[type="text"]#discord { width: 100%; min-width: 0; }
+  input[type="number"] { width: 5rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    .msg { font-size: 0.85rem; margin-top: 0.5rem; color: var(--muted); }
+    .msg.err { color: #ff8a8a; }
+    .scroll-box { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: #121a26; }
+    table.data { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    table.data th, table.data td { padding: 0.45rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    table.data th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: #1a2332; z-index: 1; }
+    table.data a { color: var(--accent); }
+    .mono-sm { font-family: var(--mono); font-size: 0.78rem; color: #c8d4e6; white-space: pre-wrap; }
+    .st { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .st-yeni { background: #1a3a2a; color: var(--ok); }
+    .st-kuyruk { background: #2a2a1a; color: var(--warn); }
+    .st-yayin { background: #2a1a2a; color: var(--muted); }
+    .feed-list { list-style: none; margin: 0; padding: 0; }
+    .feed-list li { padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 0.78rem; word-break: break-all; }
+    .feed-list li:last-child { border-bottom: none; }
+    .cat-genel { color: var(--muted); }
+    .cat-kripto { color: var(--ok); }
+    .cat-finans { color: var(--warn); }
+    .cat-diger { color: var(--muted); }
+    .queue-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; margin-bottom: 0.65rem; background: #121a26; }
+    .queue-card.next { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(29,155,240,0.25); }
+    .queue-card h3 { margin: 0 0 0.35rem; font-size: 0.92rem; font-weight: 600; }
+    .queue-meta { font-size: 0.78rem; color: var(--muted); margin-bottom: 0.5rem; }
+    .queue-body { font-family: var(--mono); font-size: 0.8rem; white-space: pre-wrap; background: #0d1219; padding: 0.55rem; border-radius: 6px; max-height: 180px; overflow: auto; }
+    #log { font-family: var(--mono); font-size: 0.78rem; background: #121a26; border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem; height: 200px; overflow: auto; white-space: pre-wrap; }
+    details.settings { margin-top: 0; }
+    details.settings summary { cursor: pointer; color: var(--muted); font-weight: 600; list-style: none; }
+    details.settings summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>X Haber Paneli</h1>
+    <span id="schedBadge" class="badge">Zamanlayıcı: …</span>
+  </header>
+  <main>
+    <section>
+      <h2>Akış özeti</h2>
+      <div class="pipeline" id="pipeline">
+        <div class="pipe-step" id="pipe1"><strong>1 · RSS kaynakları</strong><span id="pipeFeeds">—</span></div>
+        <div class="pipe-step" id="pipe2"><strong>2 · Çekilen haberler</strong><span id="pipeNews">—</span></div>
+        <div class="pipe-step" id="pipe3"><strong>3 · Yayına hazır</strong><span id="pipeQueue">—</span></div>
+      </div>
+      <div class="row" style="margin-top:0.75rem">
+        <button type="button" class="primary" id="btnStart">Zamanlayıcıyı başlat</button>
+        <button type="button" class="danger" id="btnStop">Durdur</button>
+        <button type="button" id="btnRssRefresh">RSS çek</button>
+        <button type="button" id="btnEnqueue">Otomatik kuyruğa (1)</button>
+        <button type="button" class="primary" id="btnOnce">Şimdi yayınla (sıradaki)</button>
+        <button type="button" id="btnLogin">Chrome oturumu (X)</button>
+        <button type="button" id="btnXWatch">X hesapları tara</button>
+      </div>
+      <p class="hint" id="chromeHint"></p>
+      <p class="hint" id="scheduleHint"></p>
+      <p class="msg" id="actionMsg"></p>
+    </section>
+
+    <section>
+      <h2>1 — RSS kaynakları</h2>
+      <ul class="feed-list" id="feedList"></ul>
+      <p class="hint">Yalnızca <strong>kripto</strong> RSS akışları (TR + uluslararası). Listeyi değiştirmek için <strong>Ayarlar</strong> → Kaydet.</p>
+    </section>
+
+    <section>
+      <h2>1b — Takip edilen X hesapları (alıntı)</h2>
+      <p class="hint" style="margin-top:0" id="xWatchHint">X takip: bot kendi Chrome profilinde çalışır (<code>x_profile</code>, CDP gerekmez). İlk kez panelden <strong>Chrome oturumu (X)</strong> ile giriş yapın.</p>
+      <ul class="feed-list" id="xWatchList"></ul>
+    </section>
+
+    <section>
+      <h2>2 — Çekilen haberler</h2>
+      <p class="hint" style="margin-top:0">Uluslararası kaynaklar Türkçe <strong>haber üslubunda</strong> iki paragraf özetlenir (kişi/kurum adı, açıkladı/söyledi, rakamlar); kuyruk metni de aynı tonda üretilir (OPENAI_API_KEY gerekir).</p>
+      <div class="row" style="margin-bottom:0.5rem">
+        <span class="hint" style="margin:0" id="rssMeta"></span>
+      </div>
+      <div class="scroll-box">
+        <table class="data">
+          <thead><tr><th>Durum</th><th>Kaynak</th><th>Başlık</th><th>Özet</th><th></th></tr></thead>
+          <tbody id="rssBody"></tbody>
+        </table>
+      </div>
+      <p class="hint"><span class="st st-yeni">yeni</span> → Kuyruğa al ile seçilir · <span class="st st-kuyruk">kuyrukta</span> · <span class="st st-yayin">yayınlandı</span></p>
+    </section>
+
+    <section>
+      <h2>3 — Yayına hazır (zamanlanmış paylaşım)</h2>
+      <p class="hint" style="margin-top:0" id="queueHint">RSS kontrol aralığında <strong>+1 haber</strong> eklenir; yayın aralığında sıradaki <strong>1 haber</strong> gider (başlangıçta hemen silinmez).</p>
+      <div id="queueCards"></div>
+      <p class="hint" id="queueEmpty">Kuyruk boş. RSS’ten bir haber seçin veya zamanlayıcıyı başlatın.</p>
+      <div class="row" style="margin-top:0.5rem">
+        <button type="button" id="btnRebuildTr">Kuyruğu Türkçeleştir (yeniden özetle)</button>
+      </div>
+    </section>
+
+    <section>
+      <details class="settings">
+        <summary>Ayarlar (RSS adresleri, aralıklar, şablon)</summary>
+        <div style="margin-top:0.85rem">
+          <label for="destination">Paylaşım hedefi</label>
+          <select id="destination">
+            <option value="x_browser">X / Twitter (tarayıcı)</option>
+            <option value="file">Dosya kuyruğu</option>
+            <option value="discord_webhook">Discord webhook</option>
+          </select>
+          <label style="margin-top:0.75rem"><input type="checkbox" id="useQueue" checked /> Gönderim kuyruğu (önce hazırla, sonra zamanla yayınla)</label>
+          <label for="template" style="margin-top:0.75rem">Post şablonu</label>
+          <textarea id="template" spellcheck="false" style="min-height:72px"></textarea>
+          <p class="hint" style="margin-top:0.35rem">Değişkenler: <code>{summary}</code>, <code>{hashtags}</code> (konuya uygun 2 etiket, otomatik), <code>{title}</code></p>
+          <label for="discord" style="margin-top:0.75rem">Discord webhook</label>
+          <input type="text" id="discord" placeholder="https://discord.com/api/webhooks/..." />
+          <label for="feeds" style="margin-top:0.75rem">RSS (satır başına bir)</label>
+          <textarea id="feeds" spellcheck="false"></textarea>
+          <label style="margin-top:0.75rem"><input type="checkbox" id="xWatchEnabled" checked /> X hesaplarını takip et (alıntı kuyruğu)</label>
+          <label for="xWatchAccounts" style="margin-top:0.5rem">X hesapları (satır başına profil URL veya @kullanıcı)</label>
+          <textarea id="xWatchAccounts" spellcheck="false" style="min-height:100px"></textarea>
+          <label for="xWatchMax" style="margin-top:0.5rem">Her RSS turunda en fazla kaç X alıntısı kuyruğa eklensin</label>
+          <input type="number" id="xWatchMax" min="0" max="5" value="1" style="max-width:5rem" />
+          <div class="row" style="margin-top:0.65rem">
+            <label style="margin:0">RSS kontrol (dk)</label>
+            <input type="number" id="interval" min="1" max="1440" value="15" />
+            <label style="margin:0">Yayın aralığı (dk)</label>
+            <input type="number" id="pubInterval" min="1" max="1440" value="15" />
+            <button type="button" class="primary" id="btnSave">Kaydet</button>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div id="log"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const actionMsg = $("actionMsg");
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, { headers: { "Accept": "application/json" }, ...opts });
+      const text = await r.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) {}
+      if (!r.ok) throw new Error((data && data.detail) ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : text || r.statusText);
+      return data;
+    }
+
+    function setMsg(t, err) { actionMsg.textContent = t || ""; actionMsg.className = "msg" + (err ? " err" : ""); }
+    function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+    function statusBadge(st) {
+      if (st === "kuyrukta") return '<span class="st st-kuyruk">kuyrukta</span>';
+      if (st === "yayinlandi") return '<span class="st st-yayin">yayınlandı</span>';
+      return '<span class="st st-yeni">yeni</span>';
+    }
+
+    async function loadConfig() {
+      const c = await api("/api/config");
+      $("feeds").value = (c.feeds || []).join("\n");
+      $("interval").value = c.poll_interval_minutes || 15;
+      $("pubInterval").value = c.publish_interval_minutes ?? 15;
+      $("useQueue").checked = c.use_post_queue !== false;
+      $("destination").value = c.destination || "x_browser";
+      $("template").value = c.post_template || "📌 {summary}\n\n{hashtags}";
+      $("discord").value = c.discord_webhook_url || "";
+      $("xWatchEnabled").checked = c.x_watch_enabled !== false;
+      $("xWatchAccounts").value = (c.x_watch_accounts || []).join("\n");
+      $("xWatchMax").value = c.x_watch_max_per_poll ?? 1;
+      await renderFeedListFromApi();
+      renderXWatchList(c.x_watch_accounts || []);
+    }
+
+    function renderXWatchList(accounts) {
+      const ul = $("xWatchList");
+      ul.innerHTML = "";
+      (accounts || []).forEach((a) => {
+        const li = document.createElement("li");
+        li.textContent = a;
+        ul.appendChild(li);
+      });
+      const n = (accounts || []).length;
+      $("xWatchHint").textContent = n + " hesap takipte — yeni gönderiler Türkçe özet + alıntı kuyruğu (CDP gerekli).";
+    }
+
+    function catClass(c) {
+      const x = (c || "").toLowerCase();
+      if (x === "kripto") return "cat-kripto";
+      if (x === "finans") return "cat-finans";
+      if (x === "genel") return "cat-genel";
+      return "cat-diger";
+    }
+
+    async function renderFeedListFromApi() {
+      try {
+        const j = await api("/api/feeds");
+        renderFeedList(j.items || (j.feeds || []).map((u) => ({ url: u, label: u, category: "Diğer" })));
+      } catch (_) {
+        renderFeedList([]);
+      }
+    }
+
+    function renderFeedList(items) {
+      const ul = $("feedList");
+      ul.innerHTML = "";
+      const counts = { Genel: 0, Kripto: 0, Finans: 0, Diğer: 0 };
+      (items || []).forEach((it) => {
+        const cat = it.category || "Diğer";
+        counts[cat] = (counts[cat] || 0) + 1;
+        const li = document.createElement("li");
+        li.innerHTML = "<span class=\"" + catClass(cat) + "\">[" + esc(cat) + "]</span> <strong>" + esc(it.label || it.url) + "</strong><br><span style=\"opacity:0.75\">" + esc(it.url) + "</span>";
+        ul.appendChild(li);
+      });
+      const n = (items || []).length;
+      $("pipeFeeds").textContent = n + " akış · Genel " + (counts.Genel || 0) + " · Kripto " + (counts.Kripto || 0) + " · Finans " + (counts.Finans || 0);
+    }
+
+    async function refreshStatus() {
+      const s = await api("/api/status");
+      const badge = $("schedBadge");
+      badge.textContent = s.scheduler_running ? "Zamanlayıcı: çalışıyor" : "Zamanlayıcı: kapalı";
+      badge.classList.toggle("on", !!s.scheduler_running);
+
+      let sched = "";
+      if (s.scheduler_running) {
+        if (s.next_rss_at) sched += "Sonraki RSS çekimi: " + s.next_rss_at;
+        if (s.use_post_queue && s.next_publish_at) {
+          sched += (sched ? " · " : "") + "Sonraki yayın: " + s.next_publish_at;
+          if (s.next_queue_title) sched += " («" + s.next_queue_title + "»)";
+        }
+      } else {
+        sched = "Zamanlayıcı kapalı — otomatik çekim ve yayın yok. Başlatın veya manuel butonları kullanın.";
+      }
+      if (s.use_existing_chrome) {
+        $("chromeHint").textContent = s.cdp_available
+          ? "Chrome: Mevcut tarayıcı + CDP (yeni sekme)."
+          : "Chrome: CDP kapalı — scripts\\chrome_debug.ps1 veya Ayarlar: USE_EXISTING_CHROME=0.";
+      } else {
+        $("chromeHint").textContent = "Chrome: Bot profili (" + (s.profile_dir || "x_profile") + ") — CDP gerekmez. İlk kez: Chrome oturumu (X) → giriş yapın.";
+      }
+      $("scheduleHint").textContent = sched;
+
+      $("pipeNews").textContent = (s.rss_preview_count || 0) + " haber listelendi";
+      $("pipeQueue").textContent = (s.queue_length || 0) + " post hazır · hedef: " + s.destination;
+      renderFeedList(s.feeds_meta || (s.feeds || []).map((u) => ({ url: u, label: u, category: "Diğer" })));
+      if (s.x_watch_accounts) renderXWatchList(s.x_watch_accounts);
+    }
+
+    async function refreshRssTable() {
+      const j = await api("/api/rss-preview");
+      $("rssMeta").textContent = (j.updated_at ? "Güncellendi: " + j.updated_at : "Henüz çekilmedi") + " · " + (j.items || []).length + " kayıt";
+      const tb = $("rssBody");
+      tb.innerHTML = "";
+      for (const it of (j.items || [])) {
+        const tr = document.createElement("tr");
+        let btn = "";
+        if (it.can_enqueue) {
+          btn = '<button type="button" class="sm primary" data-enq="' + esc(it.url) + '">Kuyruğa al</button>';
+        } else if (it.status === "kuyrukta") {
+          btn = '<span class="hint">#' + (it.queue_id || "?") + '</span>';
+        }
+        tr.innerHTML = "<td>" + statusBadge(it.status) + "</td><td>" + esc(it.source) + "</td><td>" + esc(it.title)
+          + "</td><td class=\"mono-sm\">" + esc(it.excerpt || "") + "</td><td>" + btn + "</td>";
+        tb.appendChild(tr);
+      }
+      tb.querySelectorAll("button[data-enq]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const url = btn.getAttribute("data-enq");
+          try {
+            setMsg("Haber hazırlanıyor (özet + şablon)…");
+            btn.disabled = true;
+            const r = await api("/api/post-queue/enqueue-url", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url }),
+            });
+            if (r && r.error === "turkish_required") {
+              setMsg("İngilizce haber için .env içinde OPENAI_API_KEY gerekli.", true);
+            } else if (r && r.ok) {
+              setMsg("Yayına hazır kuyruğa eklendi (Türkçe).");
+            } else {
+              setMsg("Kuyruğa eklenemedi (zaten var veya RSS’te yok).", true);
+            }
+            await refreshAll();
+          } catch (e) { setMsg(String(e), true); }
+          finally { btn.disabled = false; }
+        });
+      });
+    }
+
+    let lastQueueSig = "";
+
+    async function refreshQueueCards() {
+      const j = await api("/api/post-queue");
+      const items = j.items || [];
+      const sig = JSON.stringify(items.map((x) => [x.id, x.title, x.body]));
+      if (sig === lastQueueSig) return;
+      lastQueueSig = sig;
+      const box = $("queueCards");
+      box.innerHTML = "";
+      $("queueEmpty").style.display = items.length ? "none" : "block";
+
+      const s = await api("/api/status");
+      for (const it of items) {
+        const card = document.createElement("div");
+        card.className = "queue-card" + (it.is_next ? " next" : "");
+        let meta = "Sıra #" + it.position + " · eklendi: " + (it.created_at || "—");
+        if (it.post_kind === "x_quote" && it.quote_url) {
+          meta += " · <strong>Alıntı</strong> · <a href=\"" + esc(it.quote_url) + "\" target=\"_blank\" rel=\"noopener\">kaynak gönderi</a>";
+        }
+        if (it.is_next && s.scheduler_running && s.next_publish_at) {
+          meta += " · <strong style=\"color:var(--accent)\">Yayın: ~" + esc(s.next_publish_at) + "</strong>";
+        } else if (it.is_next) {
+          meta += " · <strong>Sıradaki yayın</strong> (manuel veya zamanlayıcı)";
+        }
+        card.innerHTML = "<h3>" + esc(it.title) + "</h3><div class=\"queue-meta\">" + meta + "</div>"
+          + "<div class=\"queue-body\">" + esc(it.body) + "</div>"
+          + "<div class=\"row\" style=\"margin-top:0.5rem\"><button type=\"button\" class=\"sm danger\" data-del=\"" + it.id + "\">Kuyruktan sil</button></div>";
+        box.appendChild(card);
+      }
+      box.querySelectorAll("button[data-del]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await api("/api/post-queue/" + btn.getAttribute("data-del"), { method: "DELETE" });
+            await refreshAll();
+          } catch (e) { setMsg(String(e), true); }
+        });
+      });
+    }
+
+    async function refreshLogs() {
+      const j = await api("/api/logs");
+      $("log").textContent = (j.lines || []).join("\n");
+    }
+
+    async function refreshAll() {
+      await refreshStatus();
+      await refreshRssTable();
+      await refreshQueueCards();
+      await refreshLogs();
+    }
+
+    $("btnStart").onclick = async () => {
+      try { await api("/api/start", { method: "POST" }); setMsg("Zamanlayıcı başladı."); await refreshAll(); }
+      catch (e) { setMsg(String(e), true); }
+    };
+    $("btnStop").onclick = async () => {
+      try { await api("/api/stop", { method: "POST" }); setMsg("Durduruluyor…"); await refreshAll(); }
+      catch (e) { setMsg(String(e), true); }
+    };
+    $("btnRssRefresh").onclick = async () => {
+      try {
+        setMsg("RSS çekiliyor…");
+        await api("/api/rss-preview/refresh", { method: "POST" });
+        setMsg("Haberler güncellendi.");
+        await refreshRssTable();
+        await refreshStatus();
+      } catch (e) { setMsg(String(e), true); }
+    };
+    $("btnEnqueue").onclick = async () => {
+      try {
+        setMsg("En güncel haber hazırlanıp kuyruğa ekleniyor…");
+        const r = await api("/api/enqueue-once", { method: "POST" });
+        await refreshAll();
+        if (r && r.error === "turkish_required") {
+          setMsg("Türkçe özet için OPENAI_API_KEY gerekli.", true);
+        } else if (r && r.ok) {
+          setMsg("Kuyruğa eklendi (Türkçe).");
+        } else {
+          setMsg("Eklenecek yeni haber yok veya zaten kuyrukta.");
+        }
+      } catch (e) { setMsg(String(e), true); }
+    };
+    $("btnXWatch").onclick = async () => {
+      try {
+        setMsg("X hesapları taranıyor (Chrome CDP)…");
+        const r = await api("/api/x-watch/poll", { method: "POST" });
+        await refreshAll();
+        setMsg(r.enqueued ? (r.enqueued + " alıntı kuyruğa eklendi.") : "Yeni X gönderisi bulunamadı veya CDP kapalı.");
+      } catch (e) { setMsg(String(e), true); }
+    };
+    $("btnRebuildTr").onclick = async () => {
+      try {
+        setMsg("Kuyruk Türkçe metinlerle yenileniyor (birkaç dakika sürebilir)…");
+        const r = await api("/api/post-queue/rebuild-turkish", { method: "POST" });
+        await refreshAll();
+        setMsg("Kuyruk güncellendi: " + (r.updated || 0) + " kayıt.");
+      } catch (e) { setMsg(String(e), true); }
+    };
+    $("btnOnce").onclick = async () => {
+      try {
+        setMsg("Yayınlanıyor…");
+        await api("/api/run-once", { method: "POST" });
+        await refreshAll();
+        setMsg("Yayın işlemi bitti.");
+      } catch (e) { setMsg(String(e), true); }
+    };
+    $("btnLogin").onclick = async () => {
+      try { await api("/api/login-window", { method: "POST" }); setMsg("Giriş penceresi açıldı."); }
+      catch (e) { setMsg(String(e), true); }
+    };
+    $("btnSave").onclick = async () => {
+      try {
+        const feeds = $("feeds").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        await api("/api/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            feeds,
+            poll_interval_minutes: parseInt($("interval").value, 10) || 15,
+            publish_interval_minutes: parseInt($("pubInterval").value, 10) || 15,
+            use_post_queue: $("useQueue").checked,
+            destination: $("destination").value,
+            post_template: $("template").value,
+            discord_webhook_url: $("discord").value.trim(),
+            x_watch_enabled: $("xWatchEnabled").checked,
+            x_watch_accounts: $("xWatchAccounts").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
+            x_watch_max_per_poll: parseInt($("xWatchMax").value, 10) || 0,
+          }),
+        });
+        setMsg("Ayarlar kaydedildi.");
+        await renderFeedListFromApi();
+        renderXWatchList($("xWatchAccounts").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+        await refreshStatus();
+      } catch (e) { setMsg(String(e), true); }
+    };
+
+    (async () => {
+      try {
+        await loadConfig();
+        await api("/api/rss-preview/refresh", { method: "POST" });
+        await refreshAll();
+      } catch (e) { setMsg("Başlangıç: " + e, true); }
+      setInterval(refreshStatus, 5000);
+      setInterval(refreshRssTable, 25000);
+      setInterval(refreshQueueCards, 20000);
+      setInterval(refreshLogs, 15000);
+    })();
+  </script>
+</body>
+</html>
