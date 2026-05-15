@@ -1135,6 +1135,9 @@ _CRYPTO_CONTEXT_HINTS: tuple[str, ...] = (
     "altcoin",
     "mica",
     "zondacrypto",
+    "bithero",
+    "upbit",
+    "irys",
     "binance",
     "coinbase",
     "kraken",
@@ -1156,9 +1159,44 @@ _CRYPTO_CONTEXT_HINTS: tuple[str, ...] = (
 )
 
 # Öncelik: önce marka/konu, sonra genel kategori.
+_TOPIC_WORD_PATTERNS: frozenset[str] = frozenset(
+    {"btc", "eth", "sol", "bnb", "bit", "coin", "rune", "ada", "xrp", "nft", "defi"}
+)
+
+
+def _topic_pattern_matches(blob: str, pattern: str) -> bool:
+    """Kısa kalıplarda upbit→bit, bithero→thor gibi yanlış eşleşmeyi önle."""
+    p = _ascii_fold(pattern).strip()
+    if not p:
+        return False
+    if p in _TOPIC_WORD_PATTERNS or (len(p) <= 4 and " " not in p):
+        return re.search(rf"(?<![a-z0-9]){re.escape(p)}(?![a-z0-9])", blob) is not None
+    if p.startswith(" ") or p.endswith(" "):
+        return p in blob or p.strip() in blob.split()
+    return p in blob
+
+
+def _topic_rule_matches(blob: str, patterns: tuple[str, ...]) -> bool:
+    return any(_topic_pattern_matches(blob, p) for p in patterns)
+
+
 _TOPIC_PRIMARY_RULES: list[tuple[tuple[str, ...], str]] = [
     (("mica", "markets in crypto-assets"), "KriptoPara"),
-    (("zondacrypto", "kripto borsa", "crypto exchange", "kripto borsasi"), "KriptoPara"),
+    (
+        (
+            "bithero",
+            "upbit",
+            "irys",
+            "zondacrypto",
+            "kripto para",
+            "kripto borsa",
+            "kripto borsasi",
+            "crypto exchange",
+            "faaliyetlerini sonlandir",
+            "borsa kapat",
+        ),
+        "KriptoPara",
+    ),
     (("tether", "usdt", "usdc", "usd tether"), "Tether"),
     (("thorchain", "thor chain"), "Thorchain"),
     (("binance", " bnb"), "Binance"),
@@ -1198,6 +1236,10 @@ def _refine_hashtag_token(token: str, context: str) -> str:
     low = _ascii_fold(token)
     if low in _CANONICAL_TAG_ALIASES:
         canon = _CANONICAL_TAG_ALIASES[low]
+        if context.strip():
+            fresh = _detect_topic_hashtags("", context)
+            if fresh and canon not in fresh:
+                return fresh[0]
         if canon == "Ekonomi" and _has_crypto_context(_ascii_fold(context)):
             return "KriptoPara"
         return canon
@@ -1229,7 +1271,7 @@ def _refine_hashtag_token(token: str, context: str) -> str:
 
 
 def _has_crypto_context(blob: str) -> bool:
-    return any(h in blob for h in _CRYPTO_CONTEXT_HINTS)
+    return any(_topic_pattern_matches(blob, h) for h in _CRYPTO_CONTEXT_HINTS)
 
 
 def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
@@ -1241,7 +1283,7 @@ def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
     for patterns, tag in _TOPIC_PRIMARY_RULES:
         if crypto_ctx and tag in _SKIP_IF_CRYPTO_PRIMARY:
             continue
-        if any(p in blob for p in patterns):
+        if _topic_rule_matches(blob, patterns):
             tags.append(tag)
             break
 
@@ -1252,13 +1294,13 @@ def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
         for patterns, tag in _TOPIC_ASSET_RULES:
             if tag in tags:
                 continue
-            if any(p in blob for p in patterns):
+            if _topic_rule_matches(blob, patterns):
                 tags.append(tag)
                 break
 
     if len(tags) < HASHTAG_COUNT and tags and tags[0] in _GENERIC_TOPIC_TAGS:
         for patterns, tag in _TOPIC_ASSET_RULES:
-            if tag not in tags and any(p in blob for p in patterns):
+            if tag not in tags and _topic_rule_matches(blob, patterns):
                 tags.append(tag)
                 break
 
@@ -1386,16 +1428,6 @@ def resolve_topic_hashtags(
                 force_refresh=force_refresh,
             )
     key = normalize_url(cache_url or "")
-    if key and not force_refresh:
-        cached = _summary_cache_get_hashtags(conn, key)
-        if cached:
-            ctx = f"{(title or '').strip()} {(summary or '').strip()}"
-            tokens = [p.lstrip("#") for p in cached.split() if p.strip()]
-            refined = _format_hashtags(tokens, context=ctx)
-            if refined and refined != cached:
-                _summary_cache_set_hashtags(conn, key, refined)
-                conn.commit()
-            return refined or cached
     ctx = f"{(title or '').strip()} {(summary or '').strip()}"
     line = _format_hashtags(_detect_topic_hashtags(title, summary), context=ctx)
     if line.count("#") < 1:
