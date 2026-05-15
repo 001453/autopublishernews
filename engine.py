@@ -1089,46 +1089,129 @@ def _ascii_fold(s: str) -> str:
     return t
 
 
+_CANONICAL_TAG_ALIASES: dict[str, str] = {
+    "kripto": "KriptoPara",
+    "kriptopara": "KriptoPara",
+    "crypto": "KriptoPara",
+    "cryptocurrency": "KriptoPara",
+    "blockchain": "Blockchain",
+    "blokzincir": "Blockchain",
+    "tether": "Tether",
+    "usdt": "Tether",
+    "usdc": "Tether",
+    "bitcoin": "Bitcoin",
+    "btc": "Bitcoin",
+    "ethereum": "Ethereum",
+    "eth": "Ethereum",
+    "thorchain": "Thorchain",
+    "thorchainhack": "Thorchain",
+    "rune": "RUNE",
+    "solana": "Solana",
+    "sol": "Solana",
+    "binance": "Binance",
+    "bnb": "Binance",
+    "xrp": "Ripple",
+    "ripple": "Ripple",
+    "defi": "DeFi",
+    "nft": "NFT",
+    "regulasyon": "Regulasyon",
+    "regulation": "Regulasyon",
+    "ekonomi": "Ekonomi",
+    "borsa": "Borsa",
+    "haber": "KriptoPara",
+    "news": "KriptoPara",
+}
+
+# Öncelik: önce marka/konu, sonra genel kategori.
+_TOPIC_PRIMARY_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("tether", "usdt", "usdc", "usd tether"), "Tether"),
+    (("thorchain", "thor chain"), "Thorchain"),
+    (("binance", " bnb"), "Binance"),
+    (("coinbase",), "Coinbase"),
+    (("solana", " sol "), "Solana"),
+    (("ripple", " xrp"), "Ripple"),
+    (("cardano", " ada"), "Cardano"),
+    (("bitcoin", " btc", "satoshi"), "Bitcoin"),
+    (("ethereum", " eth ", "vitalik"), "Ethereum"),
+    (("blockchain", "blokzincir", "blok zincir", "on-chain", "onchain"), "Blockchain"),
+    (("defi", "decentralized finance", "likidite"), "DeFi"),
+    (("nft", "non-fungible"), "NFT"),
+    (("sec ", "cftc", "regulasyon", "regulation", "komisyon"), "Regulasyon"),
+    (("fed ", "faiz", "enflasyon", "merkez bank", "dolar"), "Ekonomi"),
+    (("borsa", "nasdaq", "hisse", "wall street"), "Borsa"),
+    (("kripto", "crypto", "altcoin", "token", "coin"), "KriptoPara"),
+]
+
+_TOPIC_ASSET_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("bitcoin", " btc"), "Bitcoin"),
+    (("ethereum", " eth"), "Ethereum"),
+    (("rune",), "RUNE"),
+    (("solana", " sol "), "Solana"),
+    (("binance", " bnb"), "Binance"),
+    (("tether", " usdt"), "Tether"),
+]
+
+_GENERIC_TOPIC_TAGS = frozenset({"KriptoPara", "Blockchain", "DeFi", "NFT", "Regulasyon", "Ekonomi", "Borsa"})
+
+
 def _refine_hashtag_token(token: str, context: str) -> str:
-    """Uzun Türkçe birleşik etiketleri kısalt; ticker ve olay adı kullan."""
+    """Etiketi kısa standart forma getir (KriptoPara, Tether, Blockchain…)."""
     if not token:
         return ""
-    blob = _ascii_fold(context)
     low = _ascii_fold(token)
+    if low in _CANONICAL_TAG_ALIASES:
+        return _CANONICAL_TAG_ALIASES[low]
 
     if low.startswith("rune") and len(low) > 4:
         return "RUNE"
-    if low == "rune" or (low.startswith("rune") and "rune" in blob):
-        return "RUNE"
-
-    if "thorchain" in low and "hack" in low:
-        return "ThorchainHack"
-    if ("thorchain" in blob or "thor chain" in blob) and "hack" in blob:
-        if low in ("hack", "hacks", "kriptohack", "kripto") or "hack" in low:
-            return "ThorchainHack"
 
     m = re.match(r"^([A-Za-z]{2,10})(.+)$", token)
     if m:
         base, rest = m.group(1), _ascii_fold(m.group(2))
-        junk = (
-            "degerkaybi",
-            "degerkayb",
-            "kaybi",
-            "kayb",
-            "degeri",
-            "fiyati",
-            "fiyat",
-            "yukseldi",
-            "dustu",
-            "haber",
-            "son24",
-        )
+        base_low = base.lower()
+        if base_low in _CANONICAL_TAG_ALIASES:
+            base_tag = _CANONICAL_TAG_ALIASES[base_low]
+        else:
+            base_tag = base.upper() if base.upper() in ("RUNE", "BTC", "ETH", "SOL", "BNB", "XRP") else (
+                base[0].upper() + base[1:] if len(base) > 1 else base.upper()
+            )
+        junk = ("degerkaybi", "degerkayb", "kaybi", "kayb", "yukseldi", "dustu", "haber", "hack")
         if rest and any(j in rest for j in junk):
-            if base.upper() in ("RUNE", "BTC", "ETH", "SOL", "BNB", "XRP", "USDT", "USDC"):
-                return base.upper()
-            return base[0].upper() + base[1:] if len(base) > 1 else base.upper()
+            return base_tag
 
+    detected = _detect_topic_hashtags("", context)
+    if detected:
+        return detected[0]
     return token
+
+
+def _detect_topic_hashtags(title: str, summary: str) -> list[str]:
+    """Konuya uygun 1–2 kısa etiket: KriptoPara, Blockchain, Tether, Bitcoin…"""
+    blob = _ascii_fold(f"{title} {summary}")
+    tags: list[str] = []
+
+    for patterns, tag in _TOPIC_PRIMARY_RULES:
+        if any(p in blob for p in patterns):
+            tags.append(tag)
+            break
+
+    if len(tags) < HASHTAG_COUNT:
+        for patterns, tag in _TOPIC_ASSET_RULES:
+            if tag in tags:
+                continue
+            if any(p in blob for p in patterns):
+                tags.append(tag)
+                break
+
+    if len(tags) < HASHTAG_COUNT and tags and tags[0] in _GENERIC_TOPIC_TAGS:
+        for patterns, tag in _TOPIC_ASSET_RULES:
+            if tag not in tags and any(p in blob for p in patterns):
+                tags.append(tag)
+                break
+
+    if not tags:
+        tags.append("KriptoPara")
+    return tags[:HASHTAG_COUNT]
 
 
 def _format_hashtags(tags: list[str], *, context: str = "") -> str:
@@ -1148,36 +1231,9 @@ def _format_hashtags(tags: list[str], *, context: str = "") -> str:
     return " ".join(out)
 
 
-_HASHTAG_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
-    (("thorchain", "thor chain"), "ThorchainHack"),
-    (("rune",), "RUNE"),
-    (("bitcoin", "btc", "satoshi"), "Bitcoin"),
-    (("ethereum", "eth", "vitalik"), "Ethereum"),
-    (("tether", "usdt", "usdc", "stablecoin", "stable coin"), "Tether"),
-    (("altcoin", "defi", "nft", "web3", "kripto", "crypto", "coin"), "Kripto"),
-    (("borsa", "hisse", "nasdaq", "s&p", "wall street"), "Borsa"),
-    (("dolar", "fed", "faiz", "enflasyon", "merkez bank"), "Ekonomi"),
-    (("regülasyon", "regulation", "sec ", " cftc"), "Regülasyon"),
-]
-
-
 def heuristic_topic_hashtags(title: str, summary: str) -> str:
-    blob = f"{title} {summary}".lower()
     ctx = f"{title} {summary}"
-    tags: list[str] = []
-    if ("thorchain" in blob or "thor chain" in blob) and "hack" in blob:
-        tags.append("ThorchainHack")
-    if "rune" in blob and len(tags) < HASHTAG_COUNT:
-        tags.append("RUNE")
-    for keys, tag in _HASHTAG_KEYWORDS:
-        if any(k in blob for k in keys):
-            if tag not in tags:
-                tags.append(tag)
-        if len(tags) >= HASHTAG_COUNT:
-            break
-    if len(tags) < HASHTAG_COUNT:
-        tags.append("Haber" if looks_likely_turkish(summary or title) else "News")
-    return _format_hashtags(tags, context=ctx)
+    return _format_hashtags(_detect_topic_hashtags(title, summary), context=ctx)
 
 
 def _parse_hashtag_response(raw: str) -> list[str]:
@@ -1210,13 +1266,13 @@ def openai_topic_hashtags(
         return None
     model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     system = (
-        f"Konuya uygun tam {HASHTAG_COUNT} X (Twitter) hashtag öner. "
-        "Yanıtı KESİNLİKLE şu satırlarle ver:\n"
-        "ETIKET1: (tek kelime, # yok, boşluksuz, en fazla 30 karakter)\n"
-        f"ETIKET2: (aynı kurallar)\n"
-        "Kurallar: kısa İngilizce CamelCase; coin ticker varsa sadece ticker (RUNE, BTC, ETH). "
-        "Olay etiketi: ThorchainHack gibi proje+olay (THORChainHack değil, RUNEdeğerkaybı gibi "
-        "Türkçe birleşik uzun kelimeler YASAK). Çok genel (#Haber, #News) kullanma."
+        f"Konuya uygun tam {HASHTAG_COUNT} X hashtag öner. Yanıt:\n"
+        "ETIKET1: (tek kelime, # yok)\n"
+        f"ETIKET2: (tek kelime)\n"
+        "Sadece kısa konu etiketleri: KriptoPara, Blockchain, Tether, Bitcoin, Ethereum, "
+        "Thorchain, DeFi, Regulasyon, Ekonomi, Borsa, RUNE. "
+        "Türkçe birleşik veya olay cümlesi yazma (RUNEdeğerkaybı, THORChainHack yasak). "
+        "Genel #Haber #News kullanma."
     )
     payload: dict[str, Any] = {
         "model": model,
@@ -1284,7 +1340,10 @@ def resolve_topic_hashtags(
                 _summary_cache_set_hashtags(conn, key, refined)
                 conn.commit()
             return refined or cached
-    line = openai_topic_hashtags(title, summary, log)
+    ctx = f"{(title or '').strip()} {(summary or '').strip()}"
+    line = _format_hashtags(_detect_topic_hashtags(title, summary), context=ctx)
+    if line.count("#") < 1:
+        line = openai_topic_hashtags(title, summary, log)
     if not line:
         line = heuristic_topic_hashtags(title, summary)
     if key and line:
