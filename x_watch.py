@@ -149,14 +149,16 @@ def _baseline_mark_posts(
         url = (post.get("url") or "").strip()
         if not tid:
             continue
-        if post.get("pinned"):
-            _mark_x_seen(conn, tid, handle, url)
-            skipped += 1
-            continue
         age_h = _tweet_age_hours(tid)
         if age_h is not None and age_h > max_age_hours:
             _mark_x_seen(conn, tid, handle, url)
             skipped += 1
+            continue
+        if post.get("pinned") and (_x_seen(conn, tid) or already_posted(conn, normalize_url(url))):
+            _mark_x_seen(conn, tid, handle, url)
+            skipped += 1
+            continue
+        # Yeni sabitlenmiş: baseline'da işaretleme — aynı turda kuyruğa gidebilir
     _set_handle_baseline(conn, handle)
     if skipped:
         _emit(
@@ -353,20 +355,31 @@ def enqueue_x_quote_post(
             return enqueue_x_quote_post(
                 tweet, log=log, conn=c, max_age_hours=max_age_hours
             )
-    if tweet.get("pinned"):
-        _mark_x_seen(conn, tweet_id, handle, tweet_url)
-        _emit(log, f"@{handle}: sabitlenmiş gönderi atlandı.")
-        return 0
+
+    pinned = bool(tweet.get("pinned"))
     age_h = _tweet_age_hours(tweet_id)
+
     if age_h is not None and age_h > age_limit:
         _mark_x_seen(conn, tweet_id, handle, tweet_url)
+        tag = "sabitlenmiş " if pinned else ""
         _emit(
             log,
-            f"@{handle}: eski gönderi atlandı ({age_h:.0f} saat, sınır {age_limit:.0f} saat).",
+            f"@{handle}: {tag}eski gönderi atlandı ({age_h:.0f} saat, sınır {age_limit:.0f} saat).",
         )
         return 0
+
     if _x_seen(conn, tweet_id) or already_posted(conn, key) or already_in_queue(conn, key):
+        if pinned:
+            _emit(log, f"@{handle}: sabitlenmiş gönderi zaten işlendi / kuyrukta.")
         return 0
+
+    if pinned:
+        _emit(
+            log,
+            f"@{handle}: yeni sabitlenmiş gönderi (~{age_h:.0f} saat) — kuyruğa alınıyor."
+            if age_h is not None
+            else f"@{handle}: yeni sabitlenmiş gönderi — kuyruğa alınıyor.",
+        )
     try:
         title_tr, body = prepare_post_payload(
             tweet_url,
