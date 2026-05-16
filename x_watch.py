@@ -140,20 +140,29 @@ def _baseline_mark_posts(
     *,
     log: Callable[[str], None] | None,
     handle: str,
+    max_age_hours: float,
 ) -> None:
-    n = 0
+    """İlk kurulum: yalnızca sabitlenmiş ve yaş sınırını aşan gönderileri işaretle; yeniler kuyruğa gidebilir."""
+    skipped = 0
     for post in posts:
         tid = (post.get("id") or "").strip()
         url = (post.get("url") or "").strip()
-        if tid:
+        if not tid:
+            continue
+        if post.get("pinned"):
             _mark_x_seen(conn, tid, handle, url)
-            n += 1
+            skipped += 1
+            continue
+        age_h = _tweet_age_hours(tid)
+        if age_h is not None and age_h > max_age_hours:
+            _mark_x_seen(conn, tid, handle, url)
+            skipped += 1
     _set_handle_baseline(conn, handle)
-    if n:
+    if skipped:
         _emit(
             log,
-            f"@{handle}: ilk tarama — {n} mevcut gönderi işaretlendi "
-            "(sabitlenmiş/eski; kuyruğa alınmadı).",
+            f"@{handle}: ilk kurulum — {skipped} sabit/eski gönderi işaretlendi "
+            f"(son {max_age_hours:.0f} saat içindekiler kuyruğa alınabilir).",
         )
 
 
@@ -424,9 +433,10 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                     continue
                 with db_session() as conn:
                     if not _handle_has_baseline(conn, handle):
-                        _baseline_mark_posts(conn, posts, log=log, handle=handle)
+                        _baseline_mark_posts(
+                            conn, posts, log=log, handle=handle, max_age_hours=max_age
+                        )
                         conn.commit()
-                        continue
                 for post in posts:
                     if enqueued >= cap:
                         break
