@@ -24,6 +24,8 @@ from engine import (
     OUTBOX_PATH,
     build_rss_preview,
     delete_post_queue_item,
+    queue_word_completions,
+    update_post_queue_item,
     effective_feeds,
     effective_poll_interval_minutes,
     effective_publish_interval_minutes,
@@ -268,6 +270,32 @@ async def api_post_queue_delete(row_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Kayıt yok.")
     append_log(f"Kuyruktan silindi: id={row_id}")
     return {"ok": True}
+
+
+class PostQueueBodyUpdate(BaseModel):
+    body: str
+
+
+@app.patch("/api/post-queue/{row_id}")
+async def api_post_queue_patch(row_id: int, body: PostQueueBodyUpdate) -> dict[str, Any]:
+    def job() -> bool:
+        return update_post_queue_item(row_id, body.body)
+
+    try:
+        ok = await asyncio.to_thread(job)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    if not ok:
+        raise HTTPException(status_code=404, detail="Kayıt yok veya metin boş.")
+    append_log(f"Kuyruk metni güncellendi: id={row_id}")
+    return {"ok": True}
+
+
+@app.get("/api/post-queue/completions")
+async def api_post_queue_completions(q: str = "", limit: int = 20) -> dict[str, Any]:
+    lim = max(1, min(50, limit))
+    words = queue_word_completions(prefix=q, limit=lim)
+    return {"words": words, "max_tweet_len": 280}
 
 
 class EnqueueUrlBody(BaseModel):

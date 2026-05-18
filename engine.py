@@ -1709,6 +1709,29 @@ def resolve_turkish_title_summary(
     raise TurkishContentRequired("Türkçe özet üretilemedi; log kayıtlarına bakın.")
 
 
+def _ensure_complete_tweet_ending(text: str) -> str:
+    """Yarım kelime / noktasız kesilmiş gövdeyi son tam cümlede bitir (hashtag satırı korunur)."""
+    text = (text or "").strip()
+    if not text:
+        return text
+    head, tag_suffix = _split_hashtag_suffix(text)
+    if not head or head.endswith((".", "!", "?", "…")):
+        return text
+    trimmed = head
+    for sep in (". ", "? ", "! ", "… "):
+        j = trimmed.rfind(sep)
+        if j >= max(40, len(trimmed) // 3):
+            trimmed = trimmed[: j + len(sep)].strip()
+            break
+    else:
+        sp = trimmed.rfind(" ")
+        if sp >= max(30, len(trimmed) // 3):
+            trimmed = trimmed[:sp].rstrip() + "."
+    if tag_suffix:
+        return (trimmed + "\n\n" + tag_suffix).strip() if trimmed else tag_suffix
+    return trimmed
+
+
 def prepare_post_payload(
     link: str,
     title: str,
@@ -1719,11 +1742,12 @@ def prepare_post_payload(
     conn: sqlite3.Connection | None = None,
     force_refresh: bool = False,
 ) -> tuple[str, str]:
+    tpl = (template or "").strip() or TEXT_ONLY_TEMPLATE
     title_tr, summary = resolve_turkish_title_summary(
         title,
         excerpt,
         log,
-        template=template,
+        template=tpl,
         conn=conn,
         cache_url=link,
         force_refresh=force_refresh,
@@ -1736,16 +1760,20 @@ def prepare_post_payload(
         cache_url=link,
         force_refresh=force_refresh,
     )
+    hashtags = (hashtags or "").strip()
+    overhead = len(format_post("", "", tpl, summary="", hashtags=hashtags))
+    summary_budget = max(90, MAX_TWEET_LEN - overhead)
+    summary = _clip_summary_body(summary, summary_budget)
     excerpt_slot = strip_html(excerpt)[:400] if excerpt else ""
     raw = format_post(
         title_tr,
         link,
-        template,
+        tpl,
         summary=summary,
         excerpt=excerpt_slot,
         hashtags=hashtags,
     )
-    return title_tr, clip_for_publish(raw)
+    return title_tr, _ensure_complete_tweet_ending(clip_for_publish(raw))
 
 
 def _split_hashtag_suffix(text: str) -> tuple[str, str]:
@@ -2346,7 +2374,11 @@ def build_rss_preview(
             if status == "kuyrukta":
                 qt, qb = queue_preview.get(key, (show_title, ""))
                 show_title = qt or show_title
-                show_excerpt = _body_to_preview_excerpt(qb) or show_excerpt
+                show_excerpt = (
+                    qb.strip()
+                    if qb and len(qb.strip()) <= 480
+                    else _body_to_preview_excerpt(qb, max_len=480)
+                ) or show_excerpt
             elif status == "yeni" and needs_tr and preview_ai_budget > 0 and not _openai_in_cooldown():
                 try:
                     show_title, show_excerpt = resolve_turkish_title_summary(
@@ -2370,8 +2402,8 @@ def build_rss_preview(
                 else:
                     show_excerpt = "Türkçe özet için «Kuyruğa al» veya listeyi yenileyin."
 
-            if len(show_excerpt) > 220:
-                show_excerpt = show_excerpt[:219].rstrip() + "…"
+            if len(show_excerpt) > 480:
+                show_excerpt = show_excerpt[:479].rstrip() + "…"
 
             items.append(
                 {
@@ -2576,14 +2608,22 @@ def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
         for r in cur.fetchall():
             pos += 1
             bid, url, title, body, created_at, quote_url, post_kind = r
-            preview = body or ""
+            body_s = body or ""
             rows.append(
                 {
                     "id": bid,
                     "url": url,
                     "title": title or "",
-                    "body": body or "",
-                    "body_preview": preview,
+                    "body": body_s,
+                    "body_len": len(body_s),
+                    "body_incomplete": bool(
+                        body_s
+                        and (
+                            body_s.rstrip().endswith("…")
+                            or body_s.rstrip().endswith("...")
+                        )
+                    ),
+                    "body_preview": body_s,
                     "created_at": created_at or "",
                     "quote_url": quote_url or "",
                     "post_kind": post_kind or "rss",
@@ -2597,6 +2637,80 @@ def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
 def delete_post_queue_item(row_id: int) -> bool:
     with db_session() as conn:
         cur = conn.execute("DELETE FROM post_queue WHERE id = ?", (row_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+_QUEUE_COMPLETION_CACHE: tuple[str, ...] | None = None
+
+
+def _build_queue_completion_words() -> tuple[str, ...]:
+    tags = set(_CANONICAL_TAG_ALIASES.values()) | set(_GENERIC_TOPIC_TAGS)
+    hashtags = ["#" + t for t in sorted(tags)]
+    phrases = (
+        "açıkladı",
+        "söyledi",
+        "duyurdu",
+        "bildirdi",
+        "görüldü",
+        "geride bıraktı",
+        "kaynaklarına göre",
+        "haberine göre",
+        "son 24 saatte",
+        "yüzde",
+        "milyar",
+        "milyon",
+        "dolar",
+        "Bitcoin",
+        "Ethereum",
+        "Tether",
+        "USDT",
+        "kripto",
+        "borsa",
+        "ETF",
+        "regülasyon",
+        "Merkez Bankası",
+        "faiz",
+        "hacim",
+        "piyasa",
+        "yatırımcı",
+        "işlem",
+    )
+    return tuple(hashtags) + phrases
+
+
+def queue_word_completions(*, prefix: str = "", limit: int = 20) -> list[str]:
+    """Panel: yayına hazır post metni için kelime / hashtag önerileri."""
+    global _QUEUE_COMPLETION_CACHE
+    if _QUEUE_COMPLETION_CACHE is None:
+        _QUEUE_COMPLETION_CACHE = _build_queue_completion_words()
+    words: set[str] = set(_QUEUE_COMPLETION_CACHE)
+    for row in list_post_queue(limit=80):
+        body = str(row.get("body") or "")
+        for m in re.finditer(r"#[\w\u0080-\uFFFF]+", body):
+            words.add(m.group(0))
+    p = (prefix or "").strip().lower().lstrip("#")
+    ordered = sorted(words, key=lambda w: (not w.startswith("#"), w.lower()))
+    if not p:
+        return ordered[: max(1, min(200, limit))]
+    out: list[str] = []
+    for w in ordered:
+        wl = w.lower()
+        if wl.startswith(p) or wl.lstrip("#").startswith(p):
+            out.append(w)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def update_post_queue_item(row_id: int, body: str) -> bool:
+    text = (body or "").strip()
+    if not text:
+        return False
+    if len(text) > MAX_TWEET_LEN:
+        raise ValueError(f"Metin en fazla {MAX_TWEET_LEN} karakter olabilir (şu an {len(text)}).")
+    with db_session() as conn:
+        cur = conn.execute("UPDATE post_queue SET body = ? WHERE id = ?", (text, row_id))
         conn.commit()
         return cur.rowcount > 0
 
