@@ -30,6 +30,60 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
+_openai_lock = threading.Lock()
+_openai_cooldown_until: float = 0.0
+_openai_cooldown_announced: bool = False
+
+
+def _openai_in_cooldown() -> bool:
+    return time.monotonic() < _openai_cooldown_until
+
+
+def _openai_set_cooldown(seconds: float | None = None) -> None:
+    global _openai_cooldown_until
+    if seconds is None:
+        try:
+            seconds = float(os.environ.get("OPENAI_COOLDOWN_SECONDS", "300"))
+        except ValueError:
+            seconds = 300.0
+    _openai_cooldown_until = time.monotonic() + max(60.0, seconds)
+
+
+def _openai_clear_cooldown() -> None:
+    global _openai_cooldown_until, _openai_cooldown_announced
+    _openai_cooldown_until = 0.0
+    _openai_cooldown_announced = False
+
+
+def _openai_log_rate_limit(log: Callable[[str], None] | None) -> None:
+    global _openai_cooldown_announced
+    if log and not _openai_cooldown_announced:
+        log(
+            "OpenAI kotası dolu (429): ~5 dk API çağrısı durdu "
+            "(liste önizlemesi; kuyruk/yayın cache ile devam edebilir)."
+        )
+        _openai_cooldown_announced = True
+
+
+def _openai_handle_api_error(log: Callable[[str], None] | None, ex: Exception) -> bool:
+    """True = 429 rate limit."""
+    err = str(ex)
+    if "429" in err or "Too Many Requests" in err.lower():
+        _openai_set_cooldown()
+        _openai_log_rate_limit(log)
+        return True
+    if log:
+        log("OpenAI Türkçe özet atlandı: " + err)
+    return False
+
+
+def _rss_preview_ai_budget() -> int:
+    raw = (os.environ.get("RSS_PREVIEW_AI_MAX") or "3").strip()
+    try:
+        return max(0, min(14, int(raw)))
+    except ValueError:
+        return 3
+
 
 def app_data_dir() -> Path:
     """Sunucu/Docker: kalıcı veri (DATA_DIR=/app/data)."""
@@ -228,6 +282,8 @@ def default_config() -> dict[str, Any]:
         ],
         "x_watch_max_per_poll": 1,
         "x_watch_max_age_hours": 36,
+        "skip_usdc_news": True,
+        "skip_x_price_posts": True,
     }
 
 
@@ -289,7 +345,62 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         out["x_watch_max_age_hours"] = 36.0
 
+    for flag in ("skip_usdc_news", "skip_x_price_posts"):
+        v = c.get(flag, out[flag])
+        out[flag] = v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on")
+
     return out
+
+
+def _config_bool(cfg: dict[str, Any], key: str, default: bool = True) -> bool:
+    v = cfg.get(key, default)
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+_USDC_SKIP_RE = (
+    re.compile(r"\busdc\b", re.I),
+    re.compile(r"\busd\s*coin\b", re.I),
+)
+_X_PRICE_SKIP_RE = (
+    re.compile(
+        r"(?:fiyat|price|peg|parite|trading\s+at|işlem\s+gör).{0,60}"
+        r"(?:[\$€]?\s*[\d]+[.,][\d]+|1[.,]00)",
+        re.I,
+    ),
+    re.compile(r"(?:will\s+be|olacak|hedef|target|expects?).{0,30}[\$€]?\s*[\d]+[.,]?\d*", re.I),
+    re.compile(r"[\$€]\s*1\.0+\b"),
+    re.compile(r"(?:^|[\s(])(?:1[.,]00|0[.,]99\d*)\s*(?:usd|usdt|usdc|dolar)\b", re.I),
+)
+
+
+def rss_skip_reason(title: str, excerpt: str, *, cfg: dict[str, Any] | None = None) -> str | None:
+    """RSS haber atlama nedeni; None = işlenebilir."""
+    c = cfg or read_panel_config()
+    if not _config_bool(c, "skip_usdc_news", True):
+        return None
+    blob = f"{title or ''} {excerpt or ''}"
+    if any(p.search(blob) for p in _USDC_SKIP_RE):
+        return "USDC"
+    return None
+
+
+def x_post_skip_reason(text: str, *, cfg: dict[str, Any] | None = None) -> str | None:
+    """X gönderi atlama nedeni; None = işlenebilir."""
+    c = cfg or read_panel_config()
+    blob = (text or "").strip()
+    if len(blob) < 4:
+        return None
+    if _config_bool(c, "skip_usdc_news", True) and any(p.search(blob) for p in _USDC_SKIP_RE):
+        return "USDC"
+    if not _config_bool(c, "skip_x_price_posts", True):
+        return None
+    if any(p.search(blob) for p in _X_PRICE_SKIP_RE):
+        return "fiyat"
+    if len(blob) <= 100 and re.search(r"[\$€]\s*[\d]+[.,][\d]+", blob):
+        return "fiyat"
+    return None
 
 
 def read_panel_config() -> dict[str, Any]:
@@ -1036,6 +1147,8 @@ def openai_turkish_bundle(
     key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if not key:
         return None
+    if _openai_in_cooldown():
+        return None
     model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     cap = max_chars if max_chars is not None else SUMMARY_BODY_MAX_CHARS
     body_text = strip_html(excerpt) if excerpt else ""
@@ -1087,6 +1200,7 @@ def openai_turkish_bundle(
         out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
         parsed = _parse_turkish_bundle(out, cap=cap)
         if parsed:
+            _openai_clear_cooldown()
             return parsed
         fallback = _normalize_summary_paragraphs(str(out))
         for _ in range(4):
@@ -1098,11 +1212,11 @@ def openai_turkish_bundle(
             t = (title or "").strip()
             if looks_likely_english(t) or len(t) > 110:
                 t = fallback.split(".")[0][:110].strip()
+            _openai_clear_cooldown()
             return t, _clip_summary_body(fallback, cap)
         return None
     except Exception as ex:
-        if log:
-            log("OpenAI Türkçe özet atlandı: " + str(ex))
+        _openai_handle_api_error(log, ex)
         return None
 
 
@@ -1405,6 +1519,8 @@ def openai_topic_hashtags(
     key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if not key:
         return None
+    if _openai_in_cooldown():
+        return None
     model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     system = (
         f"Konuya uygun tam {HASHTAG_COUNT} X hashtag öner. Yanıt:\n"
@@ -1444,8 +1560,13 @@ def openai_topic_hashtags(
         out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
         ctx = f"{(title or '').strip()} {(summary or '').strip()}"
         line = _format_hashtags(_parse_hashtag_response(out), context=ctx)
-        return line if line.count("#") >= 1 else None
+        if line and line.count("#") >= 1:
+            _openai_clear_cooldown()
+            return line
+        return None
     except Exception as ex:
+        if _openai_handle_api_error(log, ex):
+            return None
         if log:
             log("OpenAI hashtag atlandı: " + str(ex))
         return None
@@ -2204,11 +2325,12 @@ def build_rss_preview(
     template = str(cfg.get("post_template", TEXT_ONLY_TEMPLATE))
 
     items: list[dict[str, Any]] = []
-    preview_ai_budget = 14
+    preview_ai_budget = _rss_preview_ai_budget()
     with db_session() as conn:
         for link, title, excerpt in fetch_entries(feed_urls):
             if len(items) >= limit:
                 break
+            skip = rss_skip_reason(title, excerpt, cfg=cfg)
             key = normalize_url(link)
             if key in posted_urls:
                 status = "yayinlandi"
@@ -2225,7 +2347,7 @@ def build_rss_preview(
                 qt, qb = queue_preview.get(key, (show_title, ""))
                 show_title = qt or show_title
                 show_excerpt = _body_to_preview_excerpt(qb) or show_excerpt
-            elif status == "yeni" and needs_tr and preview_ai_budget > 0:
+            elif status == "yeni" and needs_tr and preview_ai_budget > 0 and not _openai_in_cooldown():
                 try:
                     show_title, show_excerpt = resolve_turkish_title_summary(
                         title,
@@ -2259,7 +2381,8 @@ def build_rss_preview(
                     "source": _source_label(link),
                     "status": status,
                     "queue_id": queued_urls.get(key),
-                    "can_enqueue": status == "yeni",
+                    "can_enqueue": status == "yeni" and not skip,
+                    "skip_reason": skip,
                 }
             )
         conn.commit()
@@ -2306,6 +2429,10 @@ def enqueue_article_by_url(
         for link, title, excerpt in fetch_entries(feeds):
             if normalize_url(link) != target_key and link.strip() != raw:
                 continue
+            skip = rss_skip_reason(title, excerpt, cfg=cfg)
+            if skip:
+                _emit(log, f"Bu haber şu an atlanıyor ({skip}).")
+                return 2
             try:
                 title_tr, text_raw = _prepare_post_for_entry(
                     link, title, excerpt, template, log, conn=conn
@@ -2347,6 +2474,16 @@ def enqueue_next_unposted(
                 continue
             if already_in_queue(conn, key_url):
                 continue
+            skip = rss_skip_reason(title, excerpt, cfg=cfg)
+            if skip:
+                _emit(
+                    log,
+                    "Atlandı ("
+                    + skip
+                    + "): "
+                    + ((title or link)[:70] + "…" if len(title or link) > 70 else (title or link)),
+                )
+                continue
             try:
                 title_tr, text_raw = _prepare_post_for_entry(
                     link, title, excerpt, template, log, conn=conn
@@ -2382,6 +2519,8 @@ def preview_next_enqueue_post(feed_urls: list[str]) -> str | None:
             if already_posted(conn, key_url):
                 continue
             if already_in_queue(conn, key_url):
+                continue
+            if rss_skip_reason(title, excerpt, cfg=cfg):
                 continue
             _title_tr, body = _prepare_post_for_entry(link, title, excerpt, template, None)
             return body
