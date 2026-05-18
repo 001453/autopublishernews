@@ -51,13 +51,14 @@ Sonra sunucuda `docker compose restart`.
 
 ## Yöntem B — Windows VPS (en az sorun)
 
-1. Windows Server / Windows 11 VPS kirala (RDP).
-2. Python 3.11+, Git, Google Chrome kurulu olsun.
-3. Projeyi klonla, `.venv` oluştur, `pip install -r requirements.txt`, `playwright install chrome`.
-4. `.env` kopyala (`OPENAI_API_KEY` vb.).
-5. `.\scripts\start_bot_chrome.ps1 -ForceRestart` → X giriş.
-6. `python dashboard.py` veya Görev Zamanlayıcısı ile otomatik başlat.
-7. Panelde **Zamanlayıcıyı başlat** veya `.env` → `AUTO_START_SCHEDULER=1`.
+**Ayrıntılı rehber:** [WINDOWS_VPS_KURULUM.md](WINDOWS_VPS_KURULUM.md)
+
+Kısa özet:
+1. RDP ile Windows Server’a bağlan.
+2. Chrome, Git, Python kur → `git clone https://github.com/001453/autopublishernews.git`
+3. `.\scripts\setup_windows_vps.ps1` → `.env` + `panel_config.json` kopyala.
+4. `.\scripts\start_bot_chrome.ps1` → X giriş → `.\.venv\Scripts\python.exe dashboard.py`
+5. Otomatik açılış: Görev Zamanlayıcı → `scripts\start_all_bot.ps1`
 
 Uzak panel: `PANEL_HOST=0.0.0.0` (güvenlik duvarında 8765 açın).
 

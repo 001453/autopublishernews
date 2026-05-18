@@ -18,7 +18,7 @@
     "https://news.bitcoin.com/feed/"
   ],
   "poll_interval_minutes": 30,
-  "publish_interval_minutes": 15,
+  "publish_interval_minutes": 115,
   "use_post_queue": true,
   "destination": "x_browser",
   "post_template": "📌 {summary}\n\n{hashtags}",
@@ -35,5 +35,7 @@
     "https://x.com/keet_io"
   ],
   "x_watch_max_per_poll": 1,
-  "x_watch_max_age_hours": 48
+  "x_watch_max_age_hours": 48.0,
+  "skip_usdc_news": true,
+  "skip_x_price_posts": true
 }

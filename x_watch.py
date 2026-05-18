@@ -23,6 +23,7 @@ from engine import (
     prepare_post_payload,
     read_panel_config,
     use_existing_chrome,
+    x_post_skip_reason,
     x_browser_page,
 )
 
@@ -371,6 +372,13 @@ def enqueue_x_quote_post(
     if _x_seen(conn, tweet_id) or already_posted(conn, key) or already_in_queue(conn, key):
         if pinned:
             _emit(log, f"@{handle}: sabitlenmiş gönderi zaten işlendi / kuyrukta.")
+        return 0
+
+    skip = x_post_skip_reason(text, cfg=cfg)
+    if skip:
+        _mark_x_seen(conn, tweet_id, handle, tweet_url)
+        label = "USDC" if skip == "USDC" else "fiyat"
+        _emit(log, f"@{handle}: {label} gönderisi atlandı.")
         return 0
 
     if pinned:
