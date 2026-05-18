@@ -18,11 +18,19 @@ function Write-Log([string]$msg) {
 Write-Log "Otomatik baslatma basladi."
 Start-Sleep -Seconds 8
 
+function Test-PortOpen([int]$Port) {
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $iar = $c.BeginConnect("127.0.0.1", $Port, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne(2000, $false)
+        if ($ok -and $c.Connected) { $c.Close(); return $true }
+        $c.Close()
+    } catch {}
+    return $false
+}
+
 # Panel zaten aciksa atla
-$panelUp = $false
-try {
-    $panelUp = (Test-NetConnection -ComputerName 127.0.0.1 -Port 8765 -WarningAction SilentlyContinue).TcpTestSucceeded
-} catch {}
+$panelUp = Test-PortOpen 8765
 if ($panelUp) {
     Write-Log "Panel zaten calisiyor (8765)."
 } else {
@@ -38,11 +46,7 @@ if ($panelUp) {
 }
 
 # Bot Chrome (CDP 9333)
-$cdpUp = $false
-try {
-    $r = Invoke-WebRequest -Uri "http://127.0.0.1:9333/json/version" -UseBasicParsing -TimeoutSec 4
-    $cdpUp = $r.StatusCode -eq 200
-} catch {}
+$cdpUp = Test-PortOpen 9333
 
 if ($cdpUp) {
     Write-Log "Bot Chrome CDP zaten aktif (9333)."
