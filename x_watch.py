@@ -20,7 +20,7 @@ from engine import (
     cdp_is_available,
     db_session,
     normalize_url,
-    prepare_post_payload,
+    prepare_x_quote_payload,
     read_panel_config,
     use_existing_chrome,
     x_post_skip_reason,
@@ -95,17 +95,27 @@ def x_watch_enabled(cfg: dict[str, Any] | None = None) -> bool:
 def x_watch_max_enqueue(cfg: dict[str, Any] | None = None) -> int:
     c = cfg or read_panel_config()
     try:
-        return max(0, min(5, int(c.get("x_watch_max_per_poll", 1))))
+        return max(0, min(8, int(c.get("x_watch_max_per_poll", 3))))
     except (TypeError, ValueError):
-        return 1
+        return 3
 
 
 def x_watch_max_age_hours(cfg: dict[str, Any] | None = None) -> float:
     c = cfg or read_panel_config()
     try:
-        return max(1.0, min(168.0, float(c.get("x_watch_max_age_hours", 36))))
+        return max(1.0, min(168.0, float(c.get("x_watch_max_age_hours", 168))))
     except (TypeError, ValueError):
-        return 36.0
+        return 168.0
+
+
+def _sort_posts_newest_first(posts: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _tid_key(p: dict[str, str]) -> int:
+        try:
+            return int((p.get("id") or "0").strip())
+        except (TypeError, ValueError):
+            return 0
+
+    return sorted(posts, key=_tid_key, reverse=True)
 
 
 def _tweet_age_hours(tweet_id: str) -> float | None:
@@ -374,7 +384,7 @@ def enqueue_x_quote_post(
             _emit(log, f"@{handle}: sabitlenmiş gönderi zaten işlendi / kuyrukta.")
         return 0
 
-    skip = x_post_skip_reason(text, cfg=cfg)
+    skip = x_post_skip_reason(text, cfg=cfg, for_x_watch=True)
     if skip:
         _mark_x_seen(conn, tweet_id, handle, tweet_url)
         label = "USDC" if skip == "USDC" else "fiyat"
@@ -389,16 +399,16 @@ def enqueue_x_quote_post(
             else f"@{handle}: yeni sabitlenmiş gönderi — kuyruğa alınıyor.",
         )
     try:
-        title_tr, body = prepare_post_payload(
+        title_tr, body = prepare_x_quote_payload(
             tweet_url,
-            f"@{handle}: {text[:200]}",
+            handle,
             text,
             template,
             log,
             conn=conn,
         )
     except TurkishContentRequired as ex:
-        _emit(log, f"@{handle} atlandı: {ex}")
+        _emit(log, f"@{handle} alıntı bekliyor: {ex}")
         return 0
 
     cur = conn.execute(
@@ -452,6 +462,7 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                     posts = _fetch_syndication(handle, limit=5)
                 if not posts:
                     continue
+                posts = _sort_posts_newest_first(posts)
                 with db_session() as conn:
                     if not _handle_has_baseline(conn, handle):
                         _baseline_mark_posts(
@@ -462,7 +473,9 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                     if enqueued >= cap:
                         break
                     n = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
-                    enqueued += n
+                    if n:
+                        enqueued += n
+                        break
     except Exception as ex:
         _emit(log, f"X hesap tarama hatası: {ex}")
     if enqueued:

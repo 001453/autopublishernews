@@ -280,10 +280,11 @@ def default_config() -> dict[str, Any]:
             "tether",
             "keet_io",
         ],
-        "x_watch_max_per_poll": 1,
-        "x_watch_max_age_hours": 36,
+        "x_watch_max_per_poll": 3,
+        "x_watch_max_age_hours": 168,
         "skip_usdc_news": True,
         "skip_x_price_posts": True,
+        "x_watch_skip_price_posts": False,
     }
 
 
@@ -337,15 +338,17 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
     else:
         out["x_watch_accounts"] = list(out["x_watch_accounts"])
     try:
-        out["x_watch_max_per_poll"] = max(0, min(5, int(c.get("x_watch_max_per_poll", 1))))
+        out["x_watch_max_per_poll"] = max(
+            0, min(8, int(c.get("x_watch_max_per_poll", out["x_watch_max_per_poll"])))
+        )
     except (TypeError, ValueError):
-        out["x_watch_max_per_poll"] = 1
+        out["x_watch_max_per_poll"] = 3
     try:
-        out["x_watch_max_age_hours"] = max(1.0, min(168.0, float(c.get("x_watch_max_age_hours", 36))))
+        out["x_watch_max_age_hours"] = max(1.0, min(168.0, float(c.get("x_watch_max_age_hours", 168))))
     except (TypeError, ValueError):
-        out["x_watch_max_age_hours"] = 36.0
+        out["x_watch_max_age_hours"] = 168.0
 
-    for flag in ("skip_usdc_news", "skip_x_price_posts"):
+    for flag in ("skip_usdc_news", "skip_x_price_posts", "x_watch_skip_price_posts"):
         v = c.get(flag, out[flag])
         out[flag] = v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on")
 
@@ -386,7 +389,12 @@ def rss_skip_reason(title: str, excerpt: str, *, cfg: dict[str, Any] | None = No
     return None
 
 
-def x_post_skip_reason(text: str, *, cfg: dict[str, Any] | None = None) -> str | None:
+def x_post_skip_reason(
+    text: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    for_x_watch: bool = False,
+) -> str | None:
     """X gönderi atlama nedeni; None = işlenebilir."""
     c = cfg or read_panel_config()
     blob = (text or "").strip()
@@ -394,11 +402,15 @@ def x_post_skip_reason(text: str, *, cfg: dict[str, Any] | None = None) -> str |
         return None
     if _config_bool(c, "skip_usdc_news", True) and any(p.search(blob) for p in _USDC_SKIP_RE):
         return "USDC"
-    if not _config_bool(c, "skip_x_price_posts", True):
+    if for_x_watch:
+        skip_price = _config_bool(c, "x_watch_skip_price_posts", False)
+    else:
+        skip_price = _config_bool(c, "skip_x_price_posts", True)
+    if not skip_price:
         return None
     if any(p.search(blob) for p in _X_PRICE_SKIP_RE):
         return "fiyat"
-    if len(blob) <= 100 and re.search(r"[\$€]\s*[\d]+[.,][\d]+", blob):
+    if not for_x_watch and len(blob) <= 100 and re.search(r"[\$€]\s*[\d]+[.,][\d]+", blob):
         return "fiyat"
     return None
 
@@ -1101,7 +1113,15 @@ def heuristic_news_line(
     return t[: max_len - 1].rstrip() + "."
 
 
-def _parse_turkish_bundle(raw: str, *, cap: int) -> tuple[str, str] | None:
+X_QUOTE_EDITORIAL_STYLE = (
+    "Görev: Bir X gönderisini ALINTILI paylaşacağız; sen alıntının üstüne yazılacak Türkçe metni yazıyorsun.\n"
+    "Orijinal metni birebir çeviri gibi değil, özgün Türkçe haber diliyle yeniden anlat (1–2 kısa paragraf).\n"
+    "Kişi/kurum adlarını koru; @Handle kullanılabilir. Emoji, hashtag, «Haberine göre» yok.\n"
+    "Cümleleri nokta ile bitir."
+)
+
+
+def _parse_turkish_bundle(raw: str, *, cap: int, min_summary_len: int = 14) -> tuple[str, str] | None:
     text = str(raw or "").strip()
     if not text:
         return None
@@ -1130,9 +1150,76 @@ def _parse_turkish_bundle(raw: str, *, cap: int) -> tuple[str, str] | None:
     summary_tr = _normalize_summary_paragraphs(summary_tr)
     summary_tr = _clip_summary_body(summary_tr, cap)
     title_tr = _clip_summary_body(title_tr, 110)
-    if len(summary_tr) < 14 or looks_likely_english(summary_tr):
+    if len(summary_tr) < min_summary_len or looks_likely_english(summary_tr):
         return None
     return title_tr, summary_tr
+
+
+def openai_x_quote_bundle(
+    handle: str,
+    tweet_text: str,
+    log: Callable[[str], None] | None,
+    *,
+    max_chars: int | None = None,
+    strict: bool = False,
+) -> tuple[str, str] | None:
+    """X alıntısı için kısa Türkçe başlık + özet (orijinal gönderi metni)."""
+    load_dotenv()
+    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not key:
+        return None
+    if _openai_in_cooldown():
+        return None
+    model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    cap = max_chars if max_chars is not None else summary_max_chars(TEXT_ONLY_TEMPLATE)
+    body_text = re.sub(r"\s+", " ", (tweet_text or "").strip())[:2000]
+    if len(body_text) < 4:
+        return None
+    h = (handle or "").strip().lstrip("@")
+    system = (
+        "Sen Türkçe kripto/finans editörüsün. Çıktın tamamen Türkçe olmalı.\n"
+        f"{X_QUOTE_EDITORIAL_STYLE}\n"
+        "Yanıtını KESİNLİKLE şu formatta ver:\n"
+        "BAŞLIK: (tek satır, en fazla 90 karakter)\n"
+        f"ÖZET: (en fazla {cap} karakter; 1 veya 2 paragraf; paragraflar arasında boş satır)\n"
+    )
+    if strict:
+        system += " Önceki deneme yetersiz kaldı; bu kez tam Türkçe ve net cümlelerle yaz."
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": f"Hesap: @{h}\n\nOrijinal gönderi:\n{body_text}",
+            },
+        ],
+        "max_tokens": 380,
+        "temperature": 0.35 if strict else 0.45,
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "User-Agent": "rss-news-bot/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=70) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        parsed = _parse_turkish_bundle(out, cap=cap, min_summary_len=10)
+        if parsed:
+            _openai_clear_cooldown()
+            return parsed
+        return None
+    except Exception as ex:
+        _openai_handle_api_error(log, ex)
+        return None
 
 
 def openai_turkish_bundle(
@@ -1707,6 +1794,99 @@ def resolve_turkish_title_summary(
             "İngilizce kaynak için .env içinde OPENAI_API_KEY gerekli."
         )
     raise TurkishContentRequired("Türkçe özet üretilemedi; log kayıtlarına bakın.")
+
+
+def resolve_x_quote_turkish(
+    handle: str,
+    tweet_text: str,
+    log: Callable[[str], None] | None,
+    *,
+    template: str | None = None,
+    conn: sqlite3.Connection | None = None,
+    cache_url: str | None = None,
+) -> tuple[str, str]:
+    """X alıntısı için Türkçe başlık + gövde (OpenAI odaklı)."""
+    if conn is None:
+        with db_session() as c:
+            return resolve_x_quote_turkish(
+                handle,
+                tweet_text,
+                log,
+                template=template,
+                conn=c,
+                cache_url=cache_url,
+            )
+    key = normalize_url(cache_url or "")
+    if key:
+        hit = _summary_cache_get(conn, key)
+        if hit:
+            return hit
+    tpl = (template or "").strip() or TEXT_ONLY_TEMPLATE
+    cap = summary_max_chars(tpl)
+    h = (handle or "").strip().lstrip("@")
+    m = re.search(r"(?:x|twitter)\.com/([^/?#]+)", h, re.I)
+    if m:
+        h = m.group(1)
+    text = re.sub(r"\s+", " ", (tweet_text or "").strip())
+    bundle = openai_x_quote_bundle(h, text, log, max_chars=cap)
+    if not bundle or looks_likely_english(bundle[1]):
+        bundle = openai_x_quote_bundle(h, text, log, max_chars=cap, strict=True)
+    if bundle and not looks_likely_english(bundle[1]):
+        title_tr = bundle[0].strip() or f"@{h} paylaşımı"
+        if key:
+            _summary_cache_set(conn, key, title_tr, bundle[1])
+            conn.commit()
+        return title_tr, bundle[1]
+    load_dotenv()
+    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+        raise TurkishContentRequired(
+            "X alıntısı için .env içinde OPENAI_API_KEY gerekli."
+        )
+    if _openai_in_cooldown():
+        raise TurkishContentRequired(
+            "OpenAI kotası dolu; birkaç dakika sonra tekrar denenecek."
+        )
+    raise TurkishContentRequired("Türkçe alıntı metni üretilemedi.")
+
+
+def prepare_x_quote_payload(
+    quote_url: str,
+    handle: str,
+    tweet_text: str,
+    template: str,
+    log: Callable[[str], None] | None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[str, str]:
+    tpl = (template or "").strip() or TEXT_ONLY_TEMPLATE
+    title_tr, summary = resolve_x_quote_turkish(
+        handle,
+        tweet_text,
+        log,
+        template=tpl,
+        conn=conn,
+        cache_url=quote_url,
+    )
+    hashtags = resolve_topic_hashtags(
+        title_tr,
+        summary,
+        log,
+        conn=conn,
+        cache_url=quote_url,
+    )
+    hashtags = (hashtags or "").strip()
+    overhead = len(format_post("", "", tpl, summary="", hashtags=hashtags))
+    summary_budget = max(90, MAX_TWEET_LEN - overhead)
+    summary = _clip_summary_body(summary, summary_budget)
+    raw = format_post(
+        title_tr,
+        quote_url,
+        tpl,
+        summary=summary,
+        excerpt="",
+        hashtags=hashtags,
+    )
+    return title_tr, _ensure_complete_tweet_ending(clip_for_publish(raw))
 
 
 def _ensure_complete_tweet_ending(text: str) -> str:
