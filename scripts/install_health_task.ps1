@@ -20,10 +20,12 @@ $action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$healthScript`"" `
     -WorkingDirectory $projRoot
 
+# MaxValue Windows Gorev Zamanlayicisinde gecersiz; ~10 yil yeterli.
+$repeatDays = 3650
 $startAt = (Get-Date).AddMinutes(2)
 $trigger = New-ScheduledTaskTrigger -Once -At $startAt `
     -RepetitionInterval (New-TimeSpan -Minutes 15) `
-    -RepetitionDuration ([TimeSpan]::MaxValue)
+    -RepetitionDuration (New-TimeSpan -Days $repeatDays)
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -44,8 +46,13 @@ Register-ScheduledTask `
     -Principal $principal `
     -Description "RSS + X bot: 8765/9333 port sagligi; duserse yeniden baslatir" | Out-Null
 
+$check = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+if (-not $check) {
+    Write-Error "Gorev kaydedilemedi: $taskName"
+}
+
 Write-Host ""
-Write-Host "Gorev olusturuldu: $taskName"
+Write-Host "Gorev olusturuldu: $taskName (durum: $($check.State))"
 Write-Host "Aralik: her 15 dakika"
 Write-Host "Script: $healthScript"
 Write-Host "Log: $projRoot\logs\health.log"
