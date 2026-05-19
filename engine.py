@@ -78,11 +78,11 @@ def _openai_handle_api_error(log: Callable[[str], None] | None, ex: Exception) -
 
 
 def _rss_preview_ai_budget() -> int:
-    raw = (os.environ.get("RSS_PREVIEW_AI_MAX") or "3").strip()
+    raw = (os.environ.get("RSS_PREVIEW_AI_MAX") or "1").strip()
     try:
         return max(0, min(14, int(raw)))
     except ValueError:
-        return 3
+        return 1
 
 
 def app_data_dir() -> Path:

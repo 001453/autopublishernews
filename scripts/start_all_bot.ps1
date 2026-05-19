@@ -16,7 +16,7 @@ function Write-Log([string]$msg) {
 }
 
 Write-Log "Otomatik baslatma basladi."
-Start-Sleep -Seconds 8
+Start-Sleep -Seconds 2
 
 function Test-PortOpen([int]$Port) {
     try {
