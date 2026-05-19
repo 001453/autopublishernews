@@ -1,4 +1,4 @@
-# .env: 429 icin onerilen anahtarlar (OPENAI_API_KEY'e dokunmaz).
+# .env: OpenAI 429 icin onerilen anahtarlar (API key degistirilmez).
 # Kullanim: cd C:\autopublishernews ; .\scripts\ensure_env.ps1
 
 $ErrorActionPreference = "Stop"
@@ -9,8 +9,9 @@ $examplePath = Join-Path $projRoot ".env.example"
 if (-not (Test-Path $envPath)) {
     if (Test-Path $examplePath) {
         Copy-Item $examplePath $envPath
-        Write-Host "Olusturuldu: .env — OPENAI_API_KEY doldurun."
-    } else {
+        Write-Host "Olusturuldu: .env - OPENAI_API_KEY doldurun."
+    }
+    else {
         Write-Error ".env yok."
     }
 }
@@ -41,7 +42,8 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
             $lines[$i] = "POLL_INTERVAL_MINUTES=30"
             Write-Host "~ POLL_INTERVAL_MINUTES 15 -> 30"
             $changed = $true
-        } elseif ($toSet.ContainsKey($k) -and $k -ne "POLL_INTERVAL_MINUTES") {
+        }
+        elseif ($toSet.ContainsKey($k) -and $k -ne "POLL_INTERVAL_MINUTES") {
             $newVal = $toSet[$k]
             if ($Matches[2].Trim() -ne $newVal) {
                 $lines[$i] = "$k=$newVal"
@@ -62,21 +64,23 @@ foreach ($k in $toSet.Keys) {
 
 $keyLine = $lines | Where-Object { $_ -match '^\s*OPENAI_API_KEY\s*=' } | Select-Object -First 1
 if (-not $keyLine) {
-    Write-Warning "OPENAI_API_KEY yok — tek satir sk-... ekleyin."
-} else {
+    Write-Warning "OPENAI_API_KEY yok - tek satir sk-... ekleyin."
+}
+else {
     $val = ($keyLine -replace '^\s*OPENAI_API_KEY\s*=\s*', '').Trim()
     if ($val.Length -lt 40) {
-        Write-Warning "OPENAI_API_KEY cok kisa — kirik satir olabilir."
+        Write-Warning "OPENAI_API_KEY cok kisa - kirik satir olabilir."
     }
     if ($val -match '\s') {
-        Write-Warning "OPENAI_API_KEY bosluk iceriyor — tek satir olmali."
+        Write-Warning "OPENAI_API_KEY bosluk iceriyor - tek satir olmali."
     }
 }
 
 if ($changed) {
     Set-Content -Path $envPath -Value $lines -Encoding UTF8
     Write-Host "Kaydedildi: $envPath"
-} else {
+}
+else {
     Write-Host ".env zaten uygun."
 }
 
