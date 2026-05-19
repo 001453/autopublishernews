@@ -67,14 +67,20 @@ foreach ($k in $desired.Keys) {
 }
 
 if (-not $map.ContainsKey("OPENAI_API_KEY")) {
-    Write-Warning "OPENAI_API_KEY YOK - asagidaki satiri .env dosyasina ekleyin:"
-    Write-Warning "OPENAI_API_KEY=sk-proj-... (tek satir)"
+    Write-Host ""
+    Write-Host "HATA: OPENAI_API_KEY .env icinde yok." -ForegroundColor Red
+    Write-Host "  notepad $envPath"
+    Write-Host "  En uste tek satir: OPENAI_API_KEY=sk-proj-..."
+    Write-Host "Dosya degistirilmedi (anahtar silinmesin diye)."
+    exit 1
 }
-else {
-    $val = $map["OPENAI_API_KEY"]
-    if ($val.Length -lt 40) {
-        Write-Warning "OPENAI_API_KEY cok kisa ($($val.Length) karakter)."
-    }
+
+$val = $map["OPENAI_API_KEY"]
+if ($val.Length -lt 40) {
+    Write-Warning "OPENAI_API_KEY cok kisa ($($val.Length) karakter) - kirik satir olabilir."
+}
+if ($val -match '\s') {
+    Write-Warning "OPENAI_API_KEY bosluk iceriyor - tek satir olmali."
 }
 
 $out = [System.Collections.Generic.List[string]]@()
