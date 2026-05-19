@@ -39,10 +39,23 @@ if ($panelUp) {
         Write-Log "HATA: venv yok: $py"
         exit 1
     }
-    $panelLog = Join-Path $logDir "dashboard.log"
+    $panelOut = Join-Path $logDir "dashboard.log"
+    $panelErr = Join-Path $logDir "dashboard.err.log"
     Start-Process -FilePath $py -ArgumentList "dashboard.py" -WorkingDirectory $projRoot `
-        -WindowStyle Minimized -RedirectStandardOutput $panelLog -RedirectStandardError $panelLog
-    Write-Log "Panel baslatildi -> http://127.0.0.1:8765"
+        -WindowStyle Minimized -RedirectStandardOutput $panelOut -RedirectStandardError $panelErr
+    $panelReady = $false
+    foreach ($i in 1..20) {
+        Start-Sleep -Seconds 2
+        if (Test-PortOpen 8765) {
+            $panelReady = $true
+            break
+        }
+    }
+    if ($panelReady) {
+        Write-Log "Panel baslatildi -> http://127.0.0.1:8765"
+    } else {
+        Write-Log "HATA: Panel 8765 acilmadi. logs\dashboard.log ve dashboard.err.log kontrol edin."
+    }
 }
 
 # Bot Chrome (CDP 9333)
