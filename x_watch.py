@@ -420,7 +420,7 @@ def enqueue_x_quote_post(
     if cur.rowcount == 1:
         _mark_x_seen(conn, tweet_id, handle, tweet_url)
         conn.commit()
-        _emit(log, f"X alıntı kuyruğa: @{handle} — {title_tr[:55]}")
+        _emit(log, f"X alıntı kuyruğa (özgünleştirildi): @{handle} — {title_tr[:55]}")
         return 1
     return 0
 

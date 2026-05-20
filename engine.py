@@ -1114,11 +1114,75 @@ def heuristic_news_line(
 
 
 X_QUOTE_EDITORIAL_STYLE = (
-    "Görev: Bir X gönderisini ALINTILI paylaşacağız; sen alıntının üstüne yazılacak Türkçe metni yazıyorsun.\n"
-    "Orijinal metni birebir çeviri gibi değil, özgün Türkçe haber diliyle yeniden anlat (1–2 kısa paragraf).\n"
-    "Kişi/kurum adlarını koru; @Handle kullanılabilir. Emoji, hashtag, «Haberine göre» yok.\n"
-    "Cümleleri nokta ile bitir."
+    "Görev: Başkasının X gönderisini ALINTILI paylaşacağız. Sen çevirmen değilsin; Türkçe kripto editörüsün.\n"
+    "YASAK: birebir çeviri, kelime kelime İngilizce kalıp, makine çevirisi kokusu, aynı cümle sırası.\n"
+    "ZORUNLU: Orijinali okuyup Türkçe mini haber / yorum gibi yeniden yaz; yayına hazır, akıcı, özgün üslup.\n"
+    "1–2 kısa paragraf (arada boş satır); kişi/kurum adı ve @Handle korunabilir; rakam/olgu doğru kalsın.\n"
+    "Emoji, 📌, hashtag, «Haberine göre», «paylaşıma göre» yazma. Cümleleri nokta ile bitir."
 )
+
+
+def _quote_word_set(text: str) -> set[str]:
+    return set(re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9']{4,}", (text or "").lower()))
+
+
+def _quote_publish_too_literal(source: str, publish: str) -> bool:
+    """Alıntı metni kaynakla fazla örtüşüyorsa (çeviri) True."""
+    src = strip_html(source)
+    pub = re.sub(r"\s+", " ", (publish or "").strip())
+    if len(pub) < 20 or len(src) < 12:
+        return False
+    if looks_likely_english(pub):
+        return True
+    if looks_likely_english(src):
+        sw = _quote_word_set(src)
+        pw = _quote_word_set(pub)
+        if sw and len(sw & pw) / len(sw) > 0.42:
+            return True
+        pub_low = pub.lower()
+        streak = 0
+        for tok in re.findall(r"[a-z]{5,}", src.lower())[:14]:
+            if tok in pub_low:
+                streak += 1
+                if streak >= 4:
+                    return True
+            else:
+                streak = 0
+    return False
+
+
+def _parse_x_quote_publish_bundle(raw: str, *, cap: int) -> tuple[str, str] | None:
+    """X alıntısı: BAŞLIK + PAYLAŞIM (yayına hazır gövde)."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    title_tr = ""
+    publish = ""
+    m_title = re.search(r"(?im)^\s*BA[ŞS]LIK:\s*(.+?)\s*$", text)
+    if m_title:
+        title_tr = m_title.group(1).strip().split("\n")[0].strip()
+    m_pub = re.search(r"(?is)PAYLA[ŞS]IM:\s*(.+)\s*$", text)
+    if m_pub:
+        publish = m_pub.group(1).strip()
+    if not publish:
+        m_sum = re.search(r"(?is)Ö?ZET:\s*(.+)\s*$", text)
+        if m_sum:
+            publish = m_sum.group(1).strip()
+    if not publish:
+        return _parse_turkish_bundle(text, cap=cap, min_summary_len=12)
+    publish = _normalize_summary_paragraphs(publish)
+    for _ in range(3):
+        if publish.startswith("📌"):
+            publish = publish[1:].lstrip(" \t")
+        else:
+            break
+    publish = _clip_summary_body(publish, cap)
+    if not title_tr:
+        title_tr = publish.split(".")[0][:90].strip()
+    title_tr = _clip_summary_body(title_tr, 90)
+    if len(publish) < 12 or looks_likely_english(publish):
+        return None
+    return title_tr, publish
 
 
 def _parse_turkish_bundle(raw: str, *, cap: int, min_summary_len: int = 14) -> tuple[str, str] | None:
@@ -1162,8 +1226,9 @@ def openai_x_quote_bundle(
     *,
     max_chars: int | None = None,
     strict: bool = False,
+    editorial_retry: bool = False,
 ) -> tuple[str, str] | None:
-    """X alıntısı için kısa Türkçe başlık + özet (orijinal gönderi metni)."""
+    """X alıntısı: yayına hazır Türkçe gövde (birebir çeviri değil)."""
     load_dotenv()
     key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if not key:
@@ -1179,23 +1244,31 @@ def openai_x_quote_bundle(
     system = (
         "Sen Türkçe kripto/finans editörüsün. Çıktın tamamen Türkçe olmalı.\n"
         f"{X_QUOTE_EDITORIAL_STYLE}\n"
-        "Yanıtını KESİNLİKLE şu formatta ver:\n"
-        "BAŞLIK: (tek satır, en fazla 90 karakter)\n"
-        f"ÖZET: (en fazla {cap} karakter; 1 veya 2 paragraf; paragraflar arasında boş satır)\n"
+        "Yanıtını KESİNLİKLE şu formatta ver (başka metin yok):\n"
+        "BAŞLIK: (tek satır, panel için; en fazla 90 karakter)\n"
+        f"PAYLAŞIM: (doğrudan tweet gövdesi; en fazla {cap} karakter; 1–2 paragraf; "
+        "şablonda 📌 ve hashtag eklenecek — sen yazma)\n"
     )
-    if strict:
-        system += " Önceki deneme yetersiz kaldı; bu kez tam Türkçe ve net cümlelerle yaz."
+    if strict or editorial_retry:
+        system += (
+            " Önceki metin çeviri gibiydi veya yetersizdi. Bu kez kaynaktan tamamen bağımsız, "
+            "özgün Türkçe editoryal cümlelerle yeniden yaz."
+        )
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {
                 "role": "user",
-                "content": f"Hesap: @{h}\n\nOrijinal gönderi:\n{body_text}",
+                "content": (
+                    f"Hesap: @{h}\n\n"
+                    "Aşağıdaki gönderiyi çevirme; Türkçe haber diliyle özgünleştirip PAYLAŞIM alanını doldur.\n\n"
+                    f"Kaynak metin:\n{body_text}"
+                ),
             },
         ],
-        "max_tokens": 380,
-        "temperature": 0.35 if strict else 0.45,
+        "max_tokens": 420,
+        "temperature": 0.55 if (strict or editorial_retry) else 0.5,
     }
     try:
         data = json.dumps(payload).encode("utf-8")
@@ -1212,10 +1285,12 @@ def openai_x_quote_bundle(
         with urllib.request.urlopen(req, timeout=70) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
         out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-        parsed = _parse_turkish_bundle(out, cap=cap, min_summary_len=10)
-        if parsed:
+        parsed = _parse_x_quote_publish_bundle(out, cap=cap)
+        if parsed and not _quote_publish_too_literal(body_text, parsed[1]):
             _openai_clear_cooldown()
             return parsed
+        if log and parsed and _quote_publish_too_literal(body_text, parsed[1]):
+            log("X alıntı: metin çeviriye çok yakın, yeniden özgünleştiriliyor…")
         return None
     except Exception as ex:
         _openai_handle_api_error(log, ex)
@@ -1819,8 +1894,10 @@ def resolve_x_quote_turkish(
     key = normalize_url(cache_url or "")
     if key:
         hit = _summary_cache_get(conn, key)
-        if hit:
+        if hit and not _quote_publish_too_literal(tweet_text, hit[1]):
             return hit
+        if hit and key:
+            _summary_cache_clear(conn, key)
     tpl = (template or "").strip() or TEXT_ONLY_TEMPLATE
     cap = summary_max_chars(tpl)
     h = (handle or "").strip().lstrip("@")
@@ -1828,9 +1905,20 @@ def resolve_x_quote_turkish(
     if m:
         h = m.group(1)
     text = re.sub(r"\s+", " ", (tweet_text or "").strip())
-    bundle = openai_x_quote_bundle(h, text, log, max_chars=cap)
-    if not bundle or looks_likely_english(bundle[1]):
-        bundle = openai_x_quote_bundle(h, text, log, max_chars=cap, strict=True)
+    bundle = None
+    for attempt, editorial_retry in enumerate((False, True, True)):
+        bundle = openai_x_quote_bundle(
+            h,
+            text,
+            log,
+            max_chars=cap,
+            strict=attempt > 0,
+            editorial_retry=editorial_retry,
+        )
+        if bundle and not looks_likely_english(bundle[1]):
+            if not _quote_publish_too_literal(text, bundle[1]):
+                break
+            bundle = None
     if bundle and not looks_likely_english(bundle[1]):
         title_tr = bundle[0].strip() or f"@{h} paylaşımı"
         if key:
