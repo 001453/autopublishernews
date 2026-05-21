@@ -1,17 +1,28 @@
-# Bot X profili (x_profile) — tek Chrome, CDP port 9333.
-# Kullanim:
-#   .\scripts\start_bot_chrome.ps1
-#   .\scripts\start_bot_chrome.ps1 -ForceRestart
+# Bot X profili — tek Chrome penceresi + CDP (varsayilan port 9333).
+# Kullanim: .\scripts\start_bot_chrome.ps1
+#           .\scripts\start_bot_chrome.ps1 -ForceRestart
+#           .\scripts\start_bot_chrome.ps1 -Url "https://x.com/login"
 
 param(
     [string]$Url = "https://x.com/login",
     [switch]$ForceRestart
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $projRoot = Split-Path $PSScriptRoot -Parent
-$profile = Join-Path $projRoot "x_profile"
-if (-not (Test-Path $profile)) { New-Item -ItemType Directory -Path $profile | Out-Null }
+Set-Location $projRoot
+
+$port = if ($env:BOT_CDP_PORT) { $env:BOT_CDP_PORT.Trim() } else { "9333" }
+$cdpBase = "http://127.0.0.1:$port"
+
+$profile = $env:X_PROFILE_DIR
+if (-not $profile) {
+    $profile = Join-Path $projRoot "x_profile"
+}
+$profile = $profile.Trim()
+if (-not (Test-Path $profile)) {
+    New-Item -ItemType Directory -Path $profile -Force | Out-Null
+}
 
 $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
 if (-not (Test-Path $chrome)) {
@@ -22,15 +33,13 @@ if (-not (Test-Path $chrome)) {
     exit 1
 }
 
-$port = if ($env:BOT_CDP_PORT) { $env:BOT_CDP_PORT } else { "9333" }
-$cdpBase = "http://127.0.0.1:${port}"
-$profileNorm = $profile.Replace("\", "/")
-
-function Test-Cdp {
+function Test-CdpReady {
     try {
-        $r = Invoke-WebRequest -Uri "$cdpBase/json/version" -UseBasicParsing -TimeoutSec 4
-        return $r.StatusCode -eq 200
-    } catch { return $false }
+        $r = Invoke-WebRequest -Uri "$cdpBase/json/version" -UseBasicParsing -TimeoutSec 6
+        return ($r.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
 }
 
 function Open-CdpTab([string]$TargetUrl) {
@@ -45,33 +54,38 @@ function Open-CdpTab([string]$TargetUrl) {
 }
 
 function Stop-BotProfileChrome {
-    $procs = Get-CimInstance Win32_Process -Filter "name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$profile*" -or $_.CommandLine -like "*x_profile*") }
-    foreach ($p in $procs) {
-        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-    if ($procs) { Start-Sleep -Seconds 2 }
+    Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and ($_.CommandLine -like "*user-data-dir=$profile*") } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    Start-Sleep -Seconds 2
 }
 
-if (Test-Cdp) {
+if (Test-CdpReady) {
     Write-Host "Bot Chrome CDP aktif (port $port)."
-    if (Open-CdpTab $Url) {
-        Write-Host "Mevcut bot Chrome'da yeni sekme: $Url"
+    if (Open-CdpTab -TargetUrl $Url) {
+        Write-Host "Yeni sekme: $Url"
         exit 0
     }
 }
 
-$needsRestart = $ForceRestart
-if (-not $needsRestart) {
-    $stale = Get-CimInstance Win32_Process -Filter "name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$profile*" -or $_.CommandLine -like "*x_profile*") }
-    if ($stale -and -not (Test-Cdp)) {
-        $needsRestart = $true
+$stale = Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and ($_.CommandLine -like "*user-data-dir=$profile*") } |
+    Select-Object -First 1
+
+if ($stale -and -not (Test-CdpReady)) {
+    if ($ForceRestart) {
+        Write-Host "Eski bot Chrome kapatiliyor (CDP kapali)..."
+        Stop-BotProfileChrome
+    } else {
+        Write-Host "x_profile Chrome acik ama CDP kapali. Tekrar: .\scripts\start_bot_chrome.ps1 -ForceRestart"
+        exit 1
     }
 }
 
-if ($needsRestart) {
-    Write-Host "Eski bot Chrome kapatiliyor (CDP icin yeniden baslatilacak)..."
+if ($ForceRestart -and (Test-CdpReady -or $stale)) {
+    Write-Host "Bot Chrome yeniden baslatiliyor (-ForceRestart)..."
     Stop-BotProfileChrome
 }
 
@@ -80,16 +94,17 @@ Start-Process -FilePath $chrome -ArgumentList @(
     "--remote-debugging-port=$port",
     "--user-data-dir=`"$profile`"",
     "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
     $Url
-)
+) | Out-Null
 
-for ($i = 0; $i -lt 20; $i++) {
+foreach ($i in 1..30) {
     Start-Sleep -Seconds 1
-    if (Test-Cdp) {
-        Write-Host "Hazir. CDP port $port - panel yeni sekme acar."
-        Write-Host "Panel: http://127.0.0.1:8765"
+    if (Test-CdpReady) {
+        Write-Host "Hazir. CDP port $port"
         exit 0
     }
 }
-Write-Host "Chrome acildi; CDP henuz hazir degil. 5 sn sonra panelden tekrar deneyin."
+Write-Host "Chrome basladi; CDP gecikebilir. Panelden tekrar deneyin."
 exit 0

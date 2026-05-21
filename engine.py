@@ -554,6 +554,30 @@ def bot_cdp_is_available() -> bool:
     return cdp_is_available(bot_cdp_url())
 
 
+def _cdp_connect_timeout_ms() -> int:
+    load_dotenv()
+    try:
+        v = int(os.environ.get("BOT_CDP_TIMEOUT_MS", "90000"))
+        return max(30_000, min(180_000, v))
+    except (TypeError, ValueError):
+        return 90_000
+
+
+def _is_cdp_connect_timeout(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return "connect_over_cdp" in s and "timeout" in s
+
+
+def recover_bot_chrome_after_cdp_failure(
+    *,
+    log: Callable[[str], None] | None = None,
+    login_url: str = "https://x.com/login",
+) -> bool:
+    """CDP portu açık ama Playwright bağlanamıyorsa (donmuş Chrome) tek pencereyi yeniden başlatır."""
+    _emit(log, "CDP yanıt vermiyor — Bot Chrome yeniden başlatılıyor (-ForceRestart)…")
+    return _run_bot_chrome_script(login_url, force_restart=True, log=log)
+
+
 def open_cdp_new_tab(url: str, *, endpoint: str | None = None) -> bool:
     """CDP açıksa mevcut Chrome oturumunda yeni sekme (ayrı profil/pencere açmaz)."""
     target = (url or "").strip()
@@ -738,7 +762,7 @@ def open_bot_profile_new_tab(url: str) -> bool:
 
 
 def _connect_cdp_browser(p: Any, endpoint: str) -> Any:
-    return p.chromium.connect_over_cdp(endpoint)
+    return p.chromium.connect_over_cdp(endpoint, timeout=_cdp_connect_timeout_ms())
 
 
 @contextmanager
@@ -777,7 +801,13 @@ def x_browser_page(*, headless: bool, new_tab: bool = True) -> Iterator[tuple[An
             if not bot_cdp_is_available():
                 ensure_bot_chrome_cdp()
             if bot_cdp_is_available():
-                browser = _connect_cdp_browser(p, bot_cdp_url())
+                try:
+                    browser = _connect_cdp_browser(p, bot_cdp_url())
+                except Exception as ex:
+                    if _is_cdp_connect_timeout(ex) and recover_bot_chrome_after_cdp_failure():
+                        browser = _connect_cdp_browser(p, bot_cdp_url())
+                    else:
+                        raise
                 if not browser.contexts:
                     raise RuntimeError("Bot Chrome CDP bağlamı yok.")
                 context = browser.contexts[0]
@@ -3045,18 +3075,34 @@ def publish_one_from_queue(
         return 1
 
     text_x = clip_for_publish(body)
-    try:
+
+    def _post_once() -> None:
         if (quote_url or "").strip():
             post_quote_tweet_browser(quote_url.strip(), text_x, log=log)
         else:
             post_tweet_browser(text_x, log=log)
+
+    try:
+        _post_once()
     except ManualPostPending:
         _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
         return 3
-    except PlaywrightTimeout as ex:
-        _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
-        return 2
-    except Exception as ex:
+    except (PlaywrightTimeout, Exception) as ex:
+        if _is_cdp_connect_timeout(ex) and recover_bot_chrome_after_cdp_failure(log=log):
+            try:
+                _post_once()
+            except ManualPostPending:
+                _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
+                return 3
+            except PlaywrightTimeout as ex2:
+                _emit(log, "Tarayıcı zaman aşımı: " + str(ex2))
+                return 2
+            except Exception as ex2:
+                _emit(log, "Gönderim hatası: " + str(ex2))
+                return 2
+        if isinstance(ex, PlaywrightTimeout):
+            _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
+            return 2
         _emit(log, "Gönderim hatası: " + str(ex))
         return 2
 

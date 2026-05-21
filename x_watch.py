@@ -15,13 +15,16 @@ from engine import (
     TEXT_ONLY_TEMPLATE,
     TurkishContentRequired,
     _emit,
+    _is_cdp_connect_timeout,
     already_in_queue,
     already_posted,
     cdp_is_available,
     db_session,
+    ensure_bot_chrome_cdp,
     normalize_url,
     prepare_x_quote_payload,
     read_panel_config,
+    recover_bot_chrome_after_cdp_failure,
     use_existing_chrome,
     x_post_skip_reason,
     x_browser_page,
@@ -446,12 +449,17 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
     mode = "CDP" if use_existing_chrome() else "bot profili (x_profile)"
     _emit(log, f"X hesap taraması başlıyor ({mode})…")
 
+    if not use_existing_chrome():
+        ensure_bot_chrome_cdp(log=log)
+
     enqueued = 0
     max_age = x_watch_max_age_hours(cfg)
-    try:
+
+    def _scan_once() -> int:
+        n = 0
         with x_browser_page(headless=False, new_tab=True) as (page, _):
             for handle in accounts:
-                if enqueued >= cap:
+                if n >= cap:
                     break
                 posts: list[dict[str, str]] = []
                 try:
@@ -470,14 +478,24 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                         )
                         conn.commit()
                 for post in posts:
-                    if enqueued >= cap:
+                    if n >= cap:
                         break
-                    n = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
-                    if n:
-                        enqueued += n
+                    added = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
+                    if added:
+                        n += added
                         break
+        return n
+
+    try:
+        enqueued = _scan_once()
     except Exception as ex:
-        _emit(log, f"X hesap tarama hatası: {ex}")
+        if _is_cdp_connect_timeout(ex) and recover_bot_chrome_after_cdp_failure(log=log):
+            try:
+                enqueued = _scan_once()
+            except Exception as ex2:
+                _emit(log, f"X hesap tarama hatası: {ex2}")
+        else:
+            _emit(log, f"X hesap tarama hatası: {ex}")
     if enqueued:
         _emit(log, f"X takip: {enqueued} yeni alıntı kuyruğa eklendi.")
     return enqueued

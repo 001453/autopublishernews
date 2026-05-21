@@ -1,4 +1,4 @@
-# Panel (8765) ve Bot Chrome CDP (9333) kontrolu; kapaliysa yeniden baslatir.
+# Panel (8765) ve Bot Chrome CDP (9333) kontrolu; kapali veya donmus CDP ise yeniden baslatir.
 # Gorev Zamanlayicisi: .\scripts\install_health_task.ps1
 
 $ErrorActionPreference = "Continue"
@@ -25,10 +25,25 @@ function Test-PortOpen([int]$Port) {
     return $false
 }
 
-$panelUp = Test-PortOpen 8765
-$cdpUp = Test-PortOpen 9333
+function Test-CdpHealthy {
+    param([string]$BaseUrl = "http://127.0.0.1:9333")
+    try {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Invoke-WebRequest -Uri "$BaseUrl/json/version" -UseBasicParsing -TimeoutSec 10
+        $sw.Stop()
+        if ($r.StatusCode -ne 200) { return $false }
+        if ($sw.ElapsedMilliseconds -gt 8000) { return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
 
-if ($panelUp -and $cdpUp) {
+$panelUp = Test-PortOpen 8765
+$cdpPortOpen = Test-PortOpen 9333
+$cdpHealthy = if ($cdpPortOpen) { Test-CdpHealthy } else { $false }
+
+if ($panelUp -and $cdpHealthy) {
     exit 0
 }
 
@@ -38,8 +53,9 @@ if (-not $panelUp) {
     exit 0
 }
 
-if (-not $cdpUp) {
-    Write-Log "9333 kapali -> start_bot_chrome.ps1"
-    & "$PSScriptRoot\start_bot_chrome.ps1" *>> $logFile
+if (-not $cdpPortOpen -or -not $cdpHealthy) {
+    $reason = if (-not $cdpPortOpen) { "9333 kapali" } else { "9333 acik ama CDP yanit vermiyor (donmus?)" }
+    Write-Log "$reason -> start_bot_chrome.ps1 -ForceRestart"
+    & "$PSScriptRoot\start_bot_chrome.ps1" -ForceRestart *>> $logFile
     exit 0
 }
