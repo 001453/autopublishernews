@@ -16,6 +16,7 @@ from engine import (
     TurkishContentRequired,
     _emit,
     _is_cdp_connect_timeout,
+    _safe_str_for_log,
     already_in_queue,
     already_posted,
     cdp_is_available,
@@ -464,8 +465,10 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                 posts: list[dict[str, str]] = []
                 try:
                     posts = fetch_profile_posts_playwright(page, handle, limit=8)
+                except UnicodeEncodeError as ex:
+                    _emit(log, f"@{handle} zaman çizelgesi (kodlama): {_safe_str_for_log(ex)}")
                 except Exception as ex:
-                    _emit(log, f"@{handle} zaman çizelgesi: {ex}")
+                    _emit(log, f"@{handle} zaman çizelgesi: {_safe_str_for_log(ex)}")
                 if not posts:
                     posts = _fetch_syndication(handle, limit=5)
                 if not posts:
@@ -480,7 +483,11 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
                 for post in posts:
                     if n >= cap:
                         break
-                    added = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
+                    try:
+                        added = enqueue_x_quote_post(post, log=log, max_age_hours=max_age)
+                    except UnicodeEncodeError as ex:
+                        _emit(log, f"@{handle} kuyruk (kodlama): {_safe_str_for_log(ex)}")
+                        added = 0
                     if added:
                         n += added
                         break
@@ -493,9 +500,9 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
             try:
                 enqueued = _scan_once()
             except Exception as ex2:
-                _emit(log, f"X hesap tarama hatası: {ex2}")
+                _emit(log, f"X hesap tarama hatası: {_safe_str_for_log(ex2)}")
         else:
-            _emit(log, f"X hesap tarama hatası: {ex}")
+            _emit(log, f"X hesap tarama hatası: {_safe_str_for_log(ex)}")
     if enqueued:
         _emit(log, f"X takip: {enqueued} yeni alıntı kuyruğa eklendi.")
     return enqueued

@@ -485,6 +485,9 @@ async def api_login_window() -> dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
+    from engine import _configure_stdio_utf8
+
+    _configure_stdio_utf8()
     host = (os.environ.get("PANEL_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     try:
         port = int((os.environ.get("PANEL_PORT") or "8765").strip())

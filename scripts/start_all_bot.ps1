@@ -41,6 +41,8 @@ if ($panelUp) {
     }
     $panelOut = Join-Path $logDir "dashboard.log"
     $panelErr = Join-Path $logDir "dashboard.err.log"
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
     Start-Process -FilePath $py -ArgumentList "dashboard.py" -WorkingDirectory $projRoot `
         -WindowStyle Minimized -RedirectStandardOutput $panelOut -RedirectStandardError $panelErr
     $panelReady = $false

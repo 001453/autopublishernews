@@ -28,6 +28,22 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
+
+def _configure_stdio_utf8() -> None:
+    """Windows VPS: Türkçe log/playwright için UTF-8 (charmap hatasını önler)."""
+    if sys.platform != "win32":
+        return
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+_configure_stdio_utf8()
+
 BASE_DIR = Path(__file__).resolve().parent
 
 _openai_lock = threading.Lock()
@@ -771,6 +787,7 @@ def x_browser_page(*, headless: bool, new_tab: bool = True) -> Iterator[tuple[An
     (page, close_context_on_exit)
     CDP: mevcut Chrome'da yeni sekme açar; iş bitince yalnızca o sekmeyi kapatır.
     """
+    _configure_stdio_utf8()
     with _x_browser_lock:
         with sync_playwright() as p:
             if use_existing_chrome() and cdp_is_available():
@@ -2589,11 +2606,22 @@ def login_interactive() -> None:
     print("Oturum kaydedildi:", prof)
 
 
+def _safe_str_for_log(obj: object) -> str:
+    s = str(obj)
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        s.encode(enc)
+        return s
+    except UnicodeEncodeError:
+        return s.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def _emit(log: Callable[[str], None] | None, msg: str) -> None:
+    text = _safe_str_for_log(msg)
     if log:
-        log(msg)
+        log(text)
     else:
-        print(msg)
+        print(text)
 
 
 def already_in_queue(conn: sqlite3.Connection, url: str) -> bool:
