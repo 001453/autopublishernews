@@ -12,15 +12,18 @@ $ErrorActionPreference = "Stop"
 $projRoot = Split-Path $PSScriptRoot -Parent
 $envPath = Join-Path $projRoot ".env"
 
-function Extract-OpenAiApiKey([string]$Input) {
-    if ($null -eq $Input) { return "" }
-    $t = ($Input -replace "`r", " " -replace "`n", " ").Trim()
+function Extract-OpenAiApiKey([string]$RawText) {
+    if ($null -eq $RawText) { return "" }
+    $t = ($RawText -replace '[\u200B-\u200D\uFEFF]', '' -replace "`r", " " -replace "`n", " ").Trim()
+    $t = $t -replace '\u2013|\u2014|\u2212', '-'
     if ($t -match 'OPENAI_API_KEY\s*=\s*(.+)') {
         $t = $Matches[1].Trim().Trim('"').Trim("'")
     }
-    $m = [regex]::Match($t, 'sk-proj-[A-Za-z0-9._-]{20,}')
+    if ($t -match '^(sk-proj-\S+)') { return $Matches[1].Trim() }
+    if ($t -match '^(sk-\S+)') { return $Matches[1].Trim() }
+    $m = [regex]::Match($t, 'sk-proj-[A-Za-z0-9_-]+')
     if ($m.Success) { return $m.Value }
-    $m2 = [regex]::Match($t, 'sk-[A-Za-z0-9._-]{20,}')
+    $m2 = [regex]::Match($t, 'sk-[A-Za-z0-9_-]+')
     if ($m2.Success) { return $m2.Value }
     return ""
 }
