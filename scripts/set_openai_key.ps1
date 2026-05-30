@@ -3,20 +3,36 @@
 #           cd C:\autopublishernews ; .\scripts\set_openai_key.ps1 -Key "sk-proj-..."
 
 param(
-    [string]$Key
+    [string]$Key,
+    [switch]$FromClipboard
 )
 
 $ErrorActionPreference = "Stop"
 $projRoot = Split-Path $PSScriptRoot -Parent
 $envPath = Join-Path $projRoot ".env"
 
+if (-not $Key -and $FromClipboard) {
+    $Key = Get-Clipboard -ErrorAction SilentlyContinue
+    if ($Key) {
+        Write-Host "Panodan okundu."
+    }
+}
+
 if (-not $Key) {
-    Write-Host "OpenAI API anahtarini yapistirin (sk-proj-... veya sk-...):"
-    $Key = Read-Host
+    Write-Host ""
+    Write-Host "=== OPENAI API ANAHTARI ===" -ForegroundColor Cyan
+    Write-Host "1) PC'nizde .env dosyasindan sk-proj-... satirini kopyalayin"
+    Write-Host "2) Buraya yapistirin (sag tik veya Ctrl+V) ve Enter'a basin"
+    Write-Host ""
+    $Key = Read-Host "Anahtar"
 }
 
 if ($null -eq $Key) { $Key = "" }
 $Key = $Key.Trim().Trim('"').Trim("'")
+# Tam satir yapistirildiyse: OPENAI_API_KEY=sk-proj-...
+if ($Key -match 'OPENAI_API_KEY\s*=\s*(.+)') {
+    $Key = $Matches[1].Trim().Trim('"').Trim("'")
+}
 if (-not $Key) {
     Write-Error "Anahtar bos."
 }
@@ -71,5 +87,8 @@ if (-not $keyWritten) {
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllLines($envPath, [string[]]$out, $utf8NoBom)
-Write-Host "OPENAI_API_KEY kaydedildi: $envPath"
-Write-Host "Dogrulama icin: .\scripts\diagnose_env.ps1"
+Write-Host ""
+Write-Host "OK: OPENAI_API_KEY kaydedildi -> $envPath" -ForegroundColor Green
+Write-Host "Uzunluk: $($Key.Length) karakter"
+Write-Host ""
+Write-Host "Simdi calistirin: .\scripts\update_vps.ps1 -SkipGit" -ForegroundColor Cyan
