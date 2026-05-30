@@ -302,7 +302,10 @@
           ? "Chrome: Mevcut tarayıcı + CDP (yeni sekme)."
           : "Chrome: CDP kapalı — scripts\\chrome_debug.ps1 veya Ayarlar: USE_EXISTING_CHROME=0.";
       } else {
-        $("chromeHint").textContent = "Chrome: Bot profili (" + (s.profile_dir || "x_profile") + ") — CDP gerekmez. İlk kez: Chrome oturumu (X) → giriş yapın.";
+        const cdpOk = !!s.cdp_available;
+        $("chromeHint").textContent = cdpOk
+          ? "Chrome: Bot profili aktif (CDP " + (s.chrome_cdp_url || "9333") + ")."
+          : "Chrome: Bot CDP kapalı — PowerShell: .\\scripts\\start_bot_chrome.ps1 -ForceRestart";
       }
       $("scheduleHint").textContent = sched;
 

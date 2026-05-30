@@ -29,6 +29,20 @@ function Test-PortOpen([int]$Port) {
     return $false
 }
 
+function Test-CdpHealthy {
+    param([string]$BaseUrl = "http://127.0.0.1:9333")
+    try {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Invoke-WebRequest -Uri "$BaseUrl/json/version" -UseBasicParsing -TimeoutSec 10
+        $sw.Stop()
+        if ($r.StatusCode -ne 200) { return $false }
+        if ($sw.ElapsedMilliseconds -gt 8000) { return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # Panel zaten aciksa atla
 $panelUp = Test-PortOpen 8765
 if ($panelUp) {
@@ -60,11 +74,20 @@ if ($panelUp) {
     }
 }
 
-# Bot Chrome (CDP 9333)
-$cdpUp = Test-PortOpen 9333
+# Bot Chrome (CDP 9333) — port acik ama donmus CDP icin de kontrol
+$cdpPortOpen = Test-PortOpen 9333
+$cdpHealthy = if ($cdpPortOpen) { Test-CdpHealthy } else { $false }
 
-if ($cdpUp) {
-    Write-Log "Bot Chrome CDP zaten aktif (9333)."
+if ($cdpHealthy) {
+    Write-Log "Bot Chrome CDP saglikli (9333)."
+} elseif ($cdpPortOpen) {
+    Write-Log "9333 acik ama CDP yanit vermiyor (donmus?) -> ForceRestart"
+    try {
+        & "$PSScriptRoot\start_bot_chrome.ps1" -ForceRestart *>> $logFile
+        Write-Log "start_bot_chrome.ps1 -ForceRestart calistirildi."
+    } catch {
+        Write-Log "HATA start_bot_chrome: $_"
+    }
 } else {
     try {
         & "$PSScriptRoot\start_bot_chrome.ps1" *>> $logFile
