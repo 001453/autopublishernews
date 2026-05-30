@@ -101,6 +101,31 @@ function Resolve-OpenAiKey([hashtable]$Map) {
     }
 }
 
+function Extract-OpenAiKeyFromFile([string]$Path) {
+    if (-not (Test-Path $Path)) { return "" }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return "" }
+    $text = $null
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $text = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    else {
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+    $flat = ($text -replace "`r", " " -replace "`n", " ")
+    if ($flat -match 'OPENAI_API_KEY\s*=\s*(sk-[^\s#"''`]+)') {
+        return $Matches[1].Trim().Trim('"').Trim("'")
+    }
+    $m = [regex]::Match($flat, 'sk-proj-[A-Za-z0-9._-]{20,}')
+    if ($m.Success) { return $m.Value }
+    $m2 = [regex]::Match($flat, 'sk-[A-Za-z0-9._-]{20,}')
+    if ($m2.Success) { return $m2.Value }
+    return ""
+}
+
 if (-not (Test-Path $envPath)) {
     if (Test-Path $examplePath) {
         Copy-Item $examplePath $envPath
@@ -161,6 +186,13 @@ foreach ($k in $parsed.Keys) {
 }
 Resolve-OpenAiKey $map
 
+$fallbackKey = Extract-OpenAiKeyFromFile $envPath
+if ($fallbackKey) {
+    if (-not $map.ContainsKey("OPENAI_API_KEY") -or $fallbackKey.Length -gt $map["OPENAI_API_KEY"].Length) {
+        $map["OPENAI_API_KEY"] = $fallbackKey
+    }
+}
+
 if ($map.ContainsKey("POLL_INTERVAL_MINUTES") -and $map["POLL_INTERVAL_MINUTES"] -eq "15") {
     $map["POLL_INTERVAL_MINUTES"] = "30"
 }
@@ -196,11 +228,11 @@ if (-not $map.ContainsKey("OPENAI_API_KEY") -or -not ($map["OPENAI_API_KEY"])) {
 }
 
 $val = $map["OPENAI_API_KEY"]
-if ($val -match 'BURAYA|ornek|example|xxxx|YOUR') {
-    Write-Warning "OPENAI_API_KEY ornek metin gibi duruyor - gercek anahtari yapistirin."
+if ($val -notmatch '^sk-') {
+    Write-Warning "OPENAI_API_KEY sk- ile baslamiyor - anahtar bozuk olabilir."
 }
-if ($val.Length -lt 40) {
-    Write-Warning "OPENAI_API_KEY cok kisa ($($val.Length) karakter) - kirik satir olabilir."
+if ($val.Length -gt 220) {
+    Write-Warning "OPENAI_API_KEY cok uzun ($($val.Length)) - .\scripts\set_openai_key.ps1 ile tekrar girin."
 }
 if ($val -match '\s') {
     Write-Warning "OPENAI_API_KEY bosluk iceriyor - tek satir olmali."
