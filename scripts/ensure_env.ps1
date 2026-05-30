@@ -27,6 +27,15 @@ function Read-EnvTextLines([string]$Path) {
     return $text -split "`r?`n"
 }
 
+function Normalize-EnvLine([string]$Line) {
+    if ($null -eq $Line) { return "" }
+    $line = $Line.TrimEnd("`r").TrimStart([char]0xFEFF)
+    $line = $line -replace [char]0xFF1D, '='
+    $line = $line -replace [char]0xFE61, '='
+    $line = $line -replace [char]0x2019, "'"
+    return $line
+}
+
 function Normalize-EnvValue([string]$Value) {
     if ($null -eq $Value) { $Value = "" }
     $v = $Value.Trim()
@@ -40,15 +49,24 @@ function Normalize-EnvValue([string]$Value) {
     return $v.Trim()
 }
 
+function Set-EnvMapValue([hashtable]$Map, [string]$Key, [string]$Value) {
+    if (-not $Map.ContainsKey($Key)) {
+        $Map[$Key] = $Value
+        return
+    }
+    if ($Key -eq "OPENAI_API_KEY" -and $Value.Length -gt $Map[$Key].Length) {
+        $Map[$Key] = $Value
+    }
+}
+
 function Parse-EnvMap([string[]]$Lines) {
     $map = @{}
     $pendingKey = $null
     foreach ($raw in $Lines) {
-        if ($null -eq $raw) { $raw = "" }
-        $line = $raw.TrimEnd("`r")
+        $line = Normalize-EnvLine $raw
         if ($pendingKey) {
             $extra = $line.Trim()
-            if ($extra -and -not ($extra -match '^\s*#')) {
+            if ($extra -and -not ($extra -match '^\s*#') -and -not ($extra -match '^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=')) {
                 $map[$pendingKey] = $map[$pendingKey] + $extra
                 if ($map[$pendingKey].Length -ge 40) {
                     $pendingKey = $null
@@ -57,19 +75,30 @@ function Parse-EnvMap([string[]]$Lines) {
             }
             $pendingKey = $null
         }
+        if ($line -match '^\s*#\s*(?:export\s+)?(OPENAI_API_KEY)\s*=\s*(.+)$') {
+            Set-EnvMapValue $map $Matches[1] (Normalize-EnvValue $Matches[2])
+            continue
+        }
         if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
             $k = $Matches[1].Trim([char]0xFEFF)
             $v = Normalize-EnvValue $Matches[2]
-            if ($map.ContainsKey($k)) {
-                continue
-            }
-            $map[$k] = $v
-            if ($k -eq "OPENAI_API_KEY" -and $v -and $v.Length -lt 40) {
+            Set-EnvMapValue $map $k $v
+            if ($k -eq "OPENAI_API_KEY" -and $v.Length -lt 40) {
                 $pendingKey = $k
             }
         }
     }
     return $map
+}
+
+function Resolve-OpenAiKey([hashtable]$Map) {
+    foreach ($alt in @("OPENAI_KEY", "OPENAI_SECRET", "OPENAI_TOKEN")) {
+        if ($Map.ContainsKey($alt) -and $Map[$alt]) {
+            if (-not $Map.ContainsKey("OPENAI_API_KEY") -or -not $Map["OPENAI_API_KEY"]) {
+                $Map["OPENAI_API_KEY"] = $Map[$alt]
+            }
+        }
+    }
 }
 
 if (-not (Test-Path $envPath)) {
@@ -101,30 +130,36 @@ $map = @{}
 $dupCount = 0
 $rawLines = @(Read-EnvTextLines $envPath)
 
-foreach ($line in $rawLines) {
-    if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+foreach ($lineRaw in $rawLines) {
+    $line = Normalize-EnvLine $lineRaw
+    if ($line -match '^\s*#\s*(?:export\s+)?(OPENAI_API_KEY)\s*=\s*(.+)$') {
+        Set-EnvMapValue $map $Matches[1] (Normalize-EnvValue $Matches[2])
+    }
+    elseif ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
         $k = $Matches[1].Trim([char]0xFEFF)
         $v = Normalize-EnvValue $Matches[2]
         if ($map.ContainsKey($k)) {
             $dupCount++
-            continue
+            Set-EnvMapValue $map $k $v
         }
-        $map[$k] = $v
+        else {
+            $map[$k] = $v
+        }
     }
     elseif ($line -match '^\s*#' -or $line.Trim() -eq "") {
         if ($map.Count -eq 0) {
-            $headerComments.Add($line)
+            $headerComments.Add($lineRaw)
         }
     }
 }
 
-# UTF-16 / kirli satir sonu: ikinci gecis (OPENAI satiri iki parcaya bolunmus olabilir)
 $parsed = Parse-EnvMap $rawLines
 foreach ($k in $parsed.Keys) {
     if (-not $map.ContainsKey($k) -or ($k -eq "OPENAI_API_KEY" -and $parsed[$k].Length -gt $map[$k].Length)) {
         $map[$k] = $parsed[$k]
     }
 }
+Resolve-OpenAiKey $map
 
 if ($map.ContainsKey("POLL_INTERVAL_MINUTES") -and $map["POLL_INTERVAL_MINUTES"] -eq "15") {
     $map["POLL_INTERVAL_MINUTES"] = "30"
@@ -146,14 +181,24 @@ if (-not $map.ContainsKey("OPENAI_API_KEY") -or -not ($map["OPENAI_API_KEY"])) {
     Write-Host "HATA: OPENAI_API_KEY .env icinde okunamadi." -ForegroundColor Red
     Write-Host "  Dosya: $envPath"
     Write-Host "  Bulunan anahtarlar: $(if ($map.Keys.Count) { ($map.Keys | Sort-Object) -join ', ' } else { '(hicbiri)' })"
-    Write-Host "  Notepad bazen UTF-16 kaydeder; script artik bunu okur. Yine de olmazsa:"
-    Write-Host "  1) notepad $envPath"
-    Write-Host "  2) Tek satir: OPENAI_API_KEY=sk-proj-..."
-    Write-Host "  3) Farkli Kaydet -> Kodlama: UTF-8"
+    Write-Host ""
+    Write-Host "  Muhtemel nedenler:"
+    Write-Host "  - Notepad'de .env.example acik (gercek dosya .env olmali)"
+    Write-Host "  - Satir basinda # var (yorum satiri sayilir)"
+    Write-Host "  - Anahtar iki satira bolunmus veya bos OPENAI_API_KEY= satiri var"
+    Write-Host ""
+    Write-Host "  Cozum:"
+    Write-Host "  .\scripts\set_openai_key.ps1"
+    Write-Host "  veya notepad $envPath -> en uste tek satir:"
+    Write-Host "  OPENAI_API_KEY=sk-proj-..."
     Write-Host "Dosya degistirilmedi (anahtar silinmesin diye)."
     exit 1
 }
+
 $val = $map["OPENAI_API_KEY"]
+if ($val -match 'BURAYA|ornek|example|xxxx|YOUR') {
+    Write-Warning "OPENAI_API_KEY ornek metin gibi duruyor - gercek anahtari yapistirin."
+}
 if ($val.Length -lt 40) {
     Write-Warning "OPENAI_API_KEY cok kisa ($($val.Length) karakter) - kirik satir olabilir."
 }
@@ -167,9 +212,7 @@ if ($headerComments.Count -gt 0) {
     $out.Add("")
 }
 
-if ($map.ContainsKey("OPENAI_API_KEY")) {
-    $out.Add("OPENAI_API_KEY=$($map['OPENAI_API_KEY'])")
-}
+$out.Add("OPENAI_API_KEY=$($map['OPENAI_API_KEY'])")
 
 $keyOrder = @(
     "OPENAI_MODEL", "OPENAI_COOLDOWN_SECONDS", "RSS_PREVIEW_AI_MAX",
@@ -195,7 +238,7 @@ foreach ($k in $map.Keys) {
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllLines($envPath, [string[]]$out, $utf8NoBom)
 if ($dupCount -gt 0) {
-    Write-Host "Tekillestirildi: $dupCount yinelenen satir silindi."
+    Write-Host "Tekillestirildi: $dupCount yinelenen satir birlestirildi."
 }
 Write-Host "Kaydedildi: $envPath"
 Write-Host "Sonra: .\scripts\start_all_bot.ps1"
