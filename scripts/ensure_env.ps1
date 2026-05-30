@@ -25,6 +25,7 @@ $desired = [ordered]@{
     PUBLISH_INTERVAL_MINUTES = "115"
     USE_EXISTING_CHROME      = "0"
     BOT_CDP_PORT             = "9333"
+    BOT_MAX_CHROME_TABS      = "2"
     HEADLESS                 = "0"
     BROWSER_CHANNEL          = "chrome"
 }
@@ -96,7 +97,7 @@ if ($map.ContainsKey("OPENAI_API_KEY")) {
 $keyOrder = @(
     "OPENAI_MODEL", "OPENAI_COOLDOWN_SECONDS", "RSS_PREVIEW_AI_MAX",
     "AUTO_START_SCHEDULER", "POLL_INTERVAL_MINUTES", "PUBLISH_INTERVAL_MINUTES",
-    "USE_EXISTING_CHROME", "BOT_CDP_PORT", "HEADLESS", "BROWSER_CHANNEL",
+    "USE_EXISTING_CHROME", "BOT_CDP_PORT", "BOT_MAX_CHROME_TABS", "HEADLESS", "BROWSER_CHANNEL",
     "DISCORD_WEBHOOK_URL"
 )
 foreach ($k in $keyOrder) {

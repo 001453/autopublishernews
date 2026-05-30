@@ -44,6 +44,15 @@ $cdpPortOpen = Test-PortOpen 9333
 $cdpHealthy = if ($cdpPortOpen) { Test-CdpHealthy } else { $false }
 
 if ($panelUp -and $cdpHealthy) {
+    $py = Join-Path $projRoot ".venv\Scripts\python.exe"
+    if (Test-Path $py) {
+        try {
+            $closed = & $py -c "from engine import prune_bot_cdp_tabs; print(prune_bot_cdp_tabs())" 2>$null
+            if ($closed -match '^\d+$' -and [int]$closed -gt 0) {
+                Write-Log "Chrome: $closed fazla sekme kapatildi."
+            }
+        } catch {}
+    }
     exit 0
 }
 

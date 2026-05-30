@@ -617,6 +617,134 @@ def open_cdp_new_tab(url: str, *, endpoint: str | None = None) -> bool:
     return False
 
 
+def _bot_max_chrome_tabs() -> int:
+    try:
+        return max(1, min(5, int(os.environ.get("BOT_MAX_CHROME_TABS", "2"))))
+    except ValueError:
+        return 2
+
+
+def _cdp_list_targets(endpoint: str) -> list[dict[str, Any]]:
+    base = endpoint.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/json/list", timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            return data if isinstance(data, list) else []
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _cdp_close_target(target_id: str, endpoint: str) -> bool:
+    tid = (target_id or "").strip()
+    if not tid:
+        return False
+    base = endpoint.rstrip("/")
+    try:
+        req = urllib.request.Request(
+            f"{base}/json/close/{tid}",
+            headers={"User-Agent": "rss-news-bot/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status in (200, 204)
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        return False
+
+
+def _cdp_endpoint_for_cleanup() -> str:
+    if bot_cdp_is_available():
+        return bot_cdp_url()
+    if use_existing_chrome() and cdp_is_available():
+        return chrome_cdp_url()
+    return ""
+
+
+def prune_bot_cdp_tabs(*, log: Callable[[str], None] | None = None) -> int:
+    """Fazla Chrome sekmelerini kapatır (bellek sızıntısı / sekme birikimi)."""
+    ep = _cdp_endpoint_for_cleanup()
+    if not ep:
+        return 0
+    pages = [t for t in _cdp_list_targets(ep) if t.get("type") == "page"]
+    web_pages: list[dict[str, Any]] = []
+    for t in pages:
+        url = (t.get("url") or "").lower()
+        if url.startswith(("chrome://", "chrome-extension://", "devtools://")):
+            continue
+        web_pages.append(t)
+
+    max_tabs = _bot_max_chrome_tabs()
+
+    def _keep_score(t: dict[str, Any]) -> tuple[int, str]:
+        url = (t.get("url") or "").lower()
+        score = 0
+        if "/home" in url:
+            score -= 10
+        if "/login" in url:
+            score -= 5
+        if "x.com" in url or "twitter.com" in url:
+            score -= 2
+        return score, str(t.get("id") or "")
+
+    web_pages.sort(key=_keep_score)
+    to_close = web_pages[max_tabs:]
+    closed = 0
+    for t in to_close:
+        if _cdp_close_target(str(t.get("id") or ""), ep):
+            closed += 1
+    if closed:
+        _emit(log, f"Chrome: {closed} fazla sekme kapatıldı (en fazla {max_tabs} X sekmesi tutulur).")
+    return closed
+
+
+def _safe_close_page(page: Any, endpoint: str) -> None:
+    try:
+        page.close()
+        return
+    except Exception:
+        pass
+    try:
+        url = page.url or ""
+        for t in _cdp_list_targets(endpoint):
+            if t.get("type") == "page" and t.get("url") == url:
+                _cdp_close_target(str(t.get("id") or ""), endpoint)
+                return
+    except Exception:
+        pass
+
+
+def _is_automation_url(url: str) -> bool:
+    u = (url or "").lower()
+    if not u or u == "about:blank":
+        return True
+    return "x.com" in u or "twitter.com" in u
+
+
+def _pick_reusable_page(context: Any) -> Any | None:
+    for pg in context.pages:
+        u = (pg.url or "").lower()
+        if u.startswith(("chrome-extension://", "devtools://")):
+            continue
+        if _is_automation_url(u):
+            return pg
+    return None
+
+
+def _release_automation_page(
+    page: Any,
+    *,
+    endpoint: str,
+    created_new: bool,
+    reused: bool,
+) -> None:
+    if created_new:
+        _safe_close_page(page, endpoint)
+    elif reused:
+        try:
+            page.goto("about:blank", wait_until="commit", timeout=15_000)
+        except Exception:
+            pass
+    prune_bot_cdp_tabs()
+
+
 def open_chrome_new_tab(url: str) -> bool:
     """Açık Chrome'da sekme: önce CDP, olmazsa chrome.exe ile URL (aynı oturum)."""
     if open_cdp_new_tab(url):
@@ -796,17 +924,27 @@ def x_browser_page(*, headless: bool, new_tab: bool = True) -> Iterator[tuple[An
                 if not browser.contexts:
                     raise RuntimeError("Chrome CDP bağlamı yok.")
                 context = browser.contexts[0]
-                page = context.new_page() if new_tab else (
-                    context.pages[0] if context.pages else context.new_page()
-                )
+                reusable = _pick_reusable_page(context) if new_tab else None
+                created_new = False
+                reused = False
+                if reusable and new_tab:
+                    page = reusable
+                    reused = True
+                elif new_tab:
+                    page = context.new_page()
+                    created_new = True
+                else:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    created_new = not context.pages
                 try:
                     yield page, False
                 finally:
-                    if new_tab:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+                    _release_automation_page(
+                        page,
+                        endpoint=endpoint,
+                        created_new=created_new,
+                        reused=reused,
+                    )
                 return
 
             if use_existing_chrome():
@@ -828,17 +966,28 @@ def x_browser_page(*, headless: bool, new_tab: bool = True) -> Iterator[tuple[An
                 if not browser.contexts:
                     raise RuntimeError("Bot Chrome CDP bağlamı yok.")
                 context = browser.contexts[0]
-                page = context.new_page() if new_tab else (
-                    context.pages[0] if context.pages else context.new_page()
-                )
+                endpoint = bot_cdp_url()
+                reusable = _pick_reusable_page(context) if new_tab else None
+                created_new = False
+                reused = False
+                if reusable and new_tab:
+                    page = reusable
+                    reused = True
+                elif new_tab:
+                    page = context.new_page()
+                    created_new = True
+                else:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    created_new = not context.pages
                 try:
                     yield page, False
                 finally:
-                    if new_tab:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+                    _release_automation_page(
+                        page,
+                        endpoint=endpoint,
+                        created_new=created_new,
+                        reused=reused,
+                    )
                 return
 
             context = _launch_x_persistent_context(p, headless=headless)

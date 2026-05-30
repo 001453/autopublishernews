@@ -64,10 +64,14 @@ function Stop-BotProfileChrome {
 
 if (Test-CdpReady) {
     Write-Host "Bot Chrome CDP aktif (port $port)."
-    if (Open-CdpTab -TargetUrl $Url) {
-        Write-Host "Yeni sekme: $Url"
-        exit 0
+    if ($Url -and $Url -ne "https://x.com/login") {
+        if (Open-CdpTab -TargetUrl $Url) {
+            Write-Host "Yeni sekme: $Url"
+        }
+    } else {
+        Write-Host "Mevcut sekmeler korunuyor (gereksiz login sekmesi acilmadi)."
     }
+    exit 0
 }
 
 $stale = Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
