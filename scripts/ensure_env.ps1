@@ -6,6 +6,72 @@ $projRoot = Split-Path $PSScriptRoot -Parent
 $envPath = Join-Path $projRoot ".env"
 $examplePath = Join-Path $projRoot ".env.example"
 
+function Read-EnvTextLines([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) {
+        return @()
+    }
+    $text = $null
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $text = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        $text = [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    else {
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+    return $text -split "`r?`n"
+}
+
+function Normalize-EnvValue([string]$Value) {
+    if ($null -eq $Value) { $Value = "" }
+    $v = $Value.Trim()
+    if ($v.Length -ge 2) {
+        $q0 = $v[0]
+        $q1 = $v[$v.Length - 1]
+        if (($q0 -eq '"' -and $q1 -eq '"') -or ($q0 -eq "'" -and $q1 -eq "'")) {
+            $v = $v.Substring(1, $v.Length - 2)
+        }
+    }
+    return $v.Trim()
+}
+
+function Parse-EnvMap([string[]]$Lines) {
+    $map = @{}
+    $pendingKey = $null
+    foreach ($raw in $Lines) {
+        if ($null -eq $raw) { $raw = "" }
+        $line = $raw.TrimEnd("`r")
+        if ($pendingKey) {
+            $extra = $line.Trim()
+            if ($extra -and -not ($extra -match '^\s*#')) {
+                $map[$pendingKey] = $map[$pendingKey] + $extra
+                if ($map[$pendingKey].Length -ge 40) {
+                    $pendingKey = $null
+                }
+                continue
+            }
+            $pendingKey = $null
+        }
+        if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+            $k = $Matches[1].Trim([char]0xFEFF)
+            $v = Normalize-EnvValue $Matches[2]
+            if ($map.ContainsKey($k)) {
+                continue
+            }
+            $map[$k] = $v
+            if ($k -eq "OPENAI_API_KEY" -and $v -and $v.Length -lt 40) {
+                $pendingKey = $k
+            }
+        }
+    }
+    return $map
+}
+
 if (-not (Test-Path $envPath)) {
     if (Test-Path $examplePath) {
         Copy-Item $examplePath $envPath
@@ -33,12 +99,12 @@ $desired = [ordered]@{
 $headerComments = [System.Collections.Generic.List[string]]@()
 $map = @{}
 $dupCount = 0
-$rawLines = @(Get-Content $envPath -Encoding UTF8)
+$rawLines = @(Read-EnvTextLines $envPath)
 
 foreach ($line in $rawLines) {
-    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
-        $k = $Matches[1]
-        $v = $Matches[2].Trim()
+    if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+        $k = $Matches[1].Trim([char]0xFEFF)
+        $v = Normalize-EnvValue $Matches[2]
         if ($map.ContainsKey($k)) {
             $dupCount++
             continue
@@ -49,6 +115,14 @@ foreach ($line in $rawLines) {
         if ($map.Count -eq 0) {
             $headerComments.Add($line)
         }
+    }
+}
+
+# UTF-16 / kirli satir sonu: ikinci gecis (OPENAI satiri iki parcaya bolunmus olabilir)
+$parsed = Parse-EnvMap $rawLines
+foreach ($k in $parsed.Keys) {
+    if (-not $map.ContainsKey($k) -or ($k -eq "OPENAI_API_KEY" -and $parsed[$k].Length -gt $map[$k].Length)) {
+        $map[$k] = $parsed[$k]
     }
 }
 
@@ -67,15 +141,18 @@ foreach ($k in $desired.Keys) {
     }
 }
 
-if (-not $map.ContainsKey("OPENAI_API_KEY")) {
+if (-not $map.ContainsKey("OPENAI_API_KEY") -or -not ($map["OPENAI_API_KEY"])) {
     Write-Host ""
-    Write-Host "HATA: OPENAI_API_KEY .env icinde yok." -ForegroundColor Red
-    Write-Host "  notepad $envPath"
-    Write-Host "  En uste tek satir: OPENAI_API_KEY=sk-proj-..."
+    Write-Host "HATA: OPENAI_API_KEY .env icinde okunamadi." -ForegroundColor Red
+    Write-Host "  Dosya: $envPath"
+    Write-Host "  Bulunan anahtarlar: $(if ($map.Keys.Count) { ($map.Keys | Sort-Object) -join ', ' } else { '(hicbiri)' })"
+    Write-Host "  Notepad bazen UTF-16 kaydeder; script artik bunu okur. Yine de olmazsa:"
+    Write-Host "  1) notepad $envPath"
+    Write-Host "  2) Tek satir: OPENAI_API_KEY=sk-proj-..."
+    Write-Host "  3) Farkli Kaydet -> Kodlama: UTF-8"
     Write-Host "Dosya degistirilmedi (anahtar silinmesin diye)."
     exit 1
 }
-
 $val = $map["OPENAI_API_KEY"]
 if ($val.Length -lt 40) {
     Write-Warning "OPENAI_API_KEY cok kisa ($($val.Length) karakter) - kirik satir olabilir."
@@ -115,7 +192,8 @@ foreach ($k in $map.Keys) {
     }
 }
 
-Set-Content -Path $envPath -Value $out -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllLines($envPath, [string[]]$out, $utf8NoBom)
 if ($dupCount -gt 0) {
     Write-Host "Tekillestirildi: $dupCount yinelenen satir silindi."
 }

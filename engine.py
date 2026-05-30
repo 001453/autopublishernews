@@ -26,8 +26,6 @@ from dotenv import load_dotenv
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
-load_dotenv()
-
 
 def _configure_stdio_utf8() -> None:
     """Windows VPS: Türkçe log/playwright için UTF-8 (charmap hatasını önler)."""
@@ -45,6 +43,7 @@ def _configure_stdio_utf8() -> None:
 _configure_stdio_utf8()
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env", encoding="utf-8-sig")
 
 _openai_lock = threading.Lock()
 _openai_cooldown_until: float = 0.0
