@@ -296,7 +296,10 @@ def default_config() -> dict[str, Any]:
             "keet_io",
         ],
         "x_watch_max_per_poll": 3,
-        "x_watch_max_age_hours": 168,
+        "x_watch_max_age_hours": 72,
+        "rss_max_age_hours": 36,
+        "queue_max_age_hours": 48,
+        "queue_max_items": 12,
         "skip_usdc_news": True,
         "skip_x_price_posts": True,
         "x_watch_skip_price_posts": False,
@@ -361,7 +364,19 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
     try:
         out["x_watch_max_age_hours"] = max(1.0, min(168.0, float(c.get("x_watch_max_age_hours", 168))))
     except (TypeError, ValueError):
-        out["x_watch_max_age_hours"] = 168.0
+        out["x_watch_max_age_hours"] = 72.0
+    try:
+        out["rss_max_age_hours"] = max(0.0, min(168.0, float(c.get("rss_max_age_hours", 36))))
+    except (TypeError, ValueError):
+        out["rss_max_age_hours"] = 36.0
+    try:
+        out["queue_max_age_hours"] = max(1.0, min(336.0, float(c.get("queue_max_age_hours", 48))))
+    except (TypeError, ValueError):
+        out["queue_max_age_hours"] = 48.0
+    try:
+        out["queue_max_items"] = max(1, min(50, int(c.get("queue_max_items", 12))))
+    except (TypeError, ValueError):
+        out["queue_max_items"] = 12
 
     for flag in ("skip_usdc_news", "skip_x_price_posts", "x_watch_skip_price_posts"):
         v = c.get(flag, out[flag])
@@ -2359,7 +2374,7 @@ def _entry_published_ts(entry: Any) -> float:
     return 0.0
 
 
-def fetch_entries(feed_urls: list[str]) -> list[tuple[str, str, str]]:
+def _fetch_entry_rows(feed_urls: list[str]) -> list[tuple[float, str, str, str]]:
     """Tüm akışlardan öğeleri toplar; yayın zamanına göre yeniden eskiye sıralar."""
     rows: list[tuple[float, str, str, str]] = []
     for feed_url in feed_urls:
@@ -2373,7 +2388,83 @@ def fetch_entries(feed_urls: list[str]) -> list[tuple[str, str, str]]:
             ts = _entry_published_ts(e)
             rows.append((ts, link.strip(), title.strip(), ex))
     rows.sort(key=lambda r: r[0], reverse=True)
-    return [(link, title, ex) for _, link, title, ex in rows]
+    return rows
+
+
+def fetch_entries(feed_urls: list[str]) -> list[tuple[str, str, str]]:
+    return [(link, title, ex) for _, link, title, ex in _fetch_entry_rows(feed_urls)]
+
+
+def rss_max_age_hours(cfg: dict[str, Any] | None = None) -> float:
+    c = cfg if cfg is not None else read_panel_config()
+    try:
+        return max(0.0, min(168.0, float(c.get("rss_max_age_hours", 36))))
+    except (TypeError, ValueError):
+        return 36.0
+
+
+def queue_max_age_hours(cfg: dict[str, Any] | None = None) -> float:
+    c = cfg if cfg is not None else read_panel_config()
+    try:
+        return max(1.0, min(336.0, float(c.get("queue_max_age_hours", 48))))
+    except (TypeError, ValueError):
+        return 48.0
+
+
+def queue_max_items(cfg: dict[str, Any] | None = None) -> int:
+    c = cfg if cfg is not None else read_panel_config()
+    try:
+        return max(1, min(50, int(c.get("queue_max_items", 12))))
+    except (TypeError, ValueError):
+        return 12
+
+
+def count_post_queue() -> int:
+    with db_session() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM post_queue").fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def prune_stale_queue_items(
+    *,
+    log: Callable[[str], None] | None = None,
+) -> int:
+    """Kuyrukta çok uzun bekleyen haberleri siler (eski haber yayınlanmasın)."""
+    hours = int(queue_max_age_hours())
+    with db_session() as conn:
+        cur = conn.execute(
+            "DELETE FROM post_queue WHERE datetime(created_at) < datetime('now', ?)",
+            (f"-{hours} hours",),
+        )
+        conn.commit()
+        n = int(cur.rowcount or 0)
+    if n and log:
+        _emit(log, f"Kuyruktan {n} eski haber silindi (>{hours} saat bekleyen).")
+    return n
+
+
+def queue_has_room(
+    *,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    cap = queue_max_items()
+    n = count_post_queue()
+    if n >= cap:
+        if log:
+            _emit(
+                log,
+                f"Kuyruk dolu ({n}/{cap}); yeni ekleme bekletiliyor (önce yayınlansın).",
+            )
+        return False
+    return True
+
+
+def _rss_entry_too_old(published_ts: float, *, cfg: dict[str, Any] | None = None) -> bool:
+    max_h = rss_max_age_hours(cfg)
+    if max_h <= 0 or published_ts <= 0:
+        return False
+    age_h = max(0.0, (time.time() - published_ts) / 3600.0)
+    return age_h > max_h
 
 
 def _active_tweet_editor(page: Any) -> Any:
@@ -2932,9 +3023,15 @@ def enqueue_article_by_url(
             _emit(log, "Bu haber zaten kuyrukta.")
             return 0
 
-        for link, title, excerpt in fetch_entries(feeds):
+        for ts, link, title, excerpt in _fetch_entry_rows(feeds):
             if normalize_url(link) != target_key and link.strip() != raw:
                 continue
+            if _rss_entry_too_old(ts, cfg=cfg):
+                _emit(
+                    log,
+                    f"Haber çok eski (>{rss_max_age_hours(cfg):.0f} saat); kuyruğa alınmadı.",
+                )
+                return 2
             skip = rss_skip_reason(title, excerpt, cfg=cfg)
             if skip:
                 _emit(log, f"Bu haber şu an atlanıyor ({skip}).")
@@ -2969,16 +3066,21 @@ def enqueue_next_unposted(
     log: Callable[[str], None] | None = None,
 ) -> int:
     """Paylaşılmamış ve kuyrukta olmayan en güncel 1 haberi hazırlayıp post_queue tablosuna ekler. Dönüş: 1 veya 0."""
+    prune_stale_queue_items(log=log)
+    if not queue_has_room(log=log):
+        return 0
     cfg = read_panel_config()
     template = str(cfg.get("post_template", "{title}\n{link}"))
     with db_session() as conn:
-        for link, title, excerpt in fetch_entries(feed_urls):
+        for ts, link, title, excerpt in _fetch_entry_rows(feed_urls):
             if not link:
                 continue
             key_url = normalize_url(link)
             if already_posted(conn, key_url):
                 continue
             if already_in_queue(conn, key_url):
+                continue
+            if _rss_entry_too_old(ts, cfg=cfg):
                 continue
             skip = rss_skip_reason(title, excerpt, cfg=cfg)
             if skip:
@@ -3018,13 +3120,15 @@ def preview_next_enqueue_post(feed_urls: list[str]) -> str | None:
     cfg = read_panel_config()
     template = str(cfg.get("post_template", "{title}\n{link}"))
     with db_session() as conn:
-        for link, title, excerpt in fetch_entries(feed_urls):
+        for ts, link, title, excerpt in _fetch_entry_rows(feed_urls):
             if not link:
                 continue
             key_url = normalize_url(link)
             if already_posted(conn, key_url):
                 continue
             if already_in_queue(conn, key_url):
+                continue
+            if _rss_entry_too_old(ts, cfg=cfg):
                 continue
             if rss_skip_reason(title, excerpt, cfg=cfg):
                 continue
@@ -3212,6 +3316,7 @@ def publish_one_from_queue(
 ) -> int:
     """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası."""
     load_dotenv()
+    prune_stale_queue_items(log=log)
     head = peek_queue_head()
     if not head:
         _emit(log, "Gönderim kuyruğu boş.")

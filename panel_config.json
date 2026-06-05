@@ -34,8 +34,11 @@
     "https://x.com/tether",
     "https://x.com/keet_io"
   ],
-  "x_watch_max_per_poll": 3,
-  "x_watch_max_age_hours": 168.0,
+  "x_watch_max_per_poll": 2,
+  "x_watch_max_age_hours": 72.0,
+  "rss_max_age_hours": 36.0,
+  "queue_max_age_hours": 48.0,
+  "queue_max_items": 12,
   "skip_usdc_news": true,
   "skip_x_price_posts": true,
   "x_watch_skip_price_posts": false

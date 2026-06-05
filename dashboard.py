@@ -342,6 +342,10 @@ class ConfigBody(BaseModel):
     x_watch_enabled: bool | None = None
     x_watch_accounts: list[str] | None = None
     x_watch_max_per_poll: int | None = None
+    x_watch_max_age_hours: float | None = None
+    rss_max_age_hours: float | None = None
+    queue_max_age_hours: float | None = None
+    queue_max_items: int | None = None
 
 
 @app.post("/api/x-watch/poll")

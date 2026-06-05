@@ -182,6 +182,16 @@
           <textarea id="xWatchAccounts" spellcheck="false" style="min-height:100px"></textarea>
           <label for="xWatchMax" style="margin-top:0.5rem">Her RSS turunda en fazla kaç X alıntısı kuyruğa eklensin</label>
           <input type="number" id="xWatchMax" min="0" max="5" value="1" style="max-width:5rem" />
+          <div class="row" style="margin-top:0.5rem;flex-wrap:wrap;gap:0.5rem">
+            <label style="margin:0">RSS max yaş (saat)</label>
+            <input type="number" id="rssMaxAge" min="0" max="168" value="36" style="max-width:4.5rem" title="Bundan eski RSS haberleri kuyruğa alınmaz" />
+            <label style="margin:0">Kuyruk max yaş (saat)</label>
+            <input type="number" id="queueMaxAge" min="1" max="336" value="48" style="max-width:4.5rem" title="Bekleyen eski haberler otomatik silinir" />
+            <label style="margin:0">Kuyruk max adet</label>
+            <input type="number" id="queueMaxItems" min="1" max="50" value="12" style="max-width:4rem" />
+            <label style="margin:0">X max yaş (saat)</label>
+            <input type="number" id="xWatchMaxAge" min="1" max="168" value="72" style="max-width:4.5rem" />
+          </div>
           <div class="row" style="margin-top:0.65rem">
             <label style="margin:0">RSS kontrol (dk)</label>
             <input type="number" id="interval" min="1" max="1440" value="15" />
@@ -233,6 +243,10 @@
       $("xWatchEnabled").checked = c.x_watch_enabled !== false;
       $("xWatchAccounts").value = (c.x_watch_accounts || []).join("\n");
       $("xWatchMax").value = c.x_watch_max_per_poll ?? 1;
+      $("rssMaxAge").value = c.rss_max_age_hours ?? 36;
+      $("queueMaxAge").value = c.queue_max_age_hours ?? 48;
+      $("queueMaxItems").value = c.queue_max_items ?? 12;
+      $("xWatchMaxAge").value = c.x_watch_max_age_hours ?? 72;
       await renderFeedListFromApi();
       renderXWatchList(c.x_watch_accounts || []);
     }
@@ -659,6 +673,10 @@
             x_watch_enabled: $("xWatchEnabled").checked,
             x_watch_accounts: $("xWatchAccounts").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
             x_watch_max_per_poll: parseInt($("xWatchMax").value, 10) || 0,
+            x_watch_max_age_hours: parseFloat($("xWatchMaxAge").value) || 72,
+            rss_max_age_hours: parseFloat($("rssMaxAge").value) || 36,
+            queue_max_age_hours: parseFloat($("queueMaxAge").value) || 48,
+            queue_max_items: parseInt($("queueMaxItems").value, 10) || 12,
           }),
         });
         setMsg("Ayarlar kaydedildi.");
