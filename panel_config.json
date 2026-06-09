@@ -36,9 +36,10 @@
   ],
   "x_watch_max_per_poll": 2,
   "x_watch_max_age_hours": 72.0,
-  "rss_max_age_hours": 36.0,
-  "queue_max_age_hours": 48.0,
-  "queue_max_items": 12,
+  "rss_max_age_hours": 4.0,
+  "queue_max_age_hours": 4.0,
+  "queue_max_items": 8,
+  "x_queue_max_items": 20,
   "skip_usdc_news": true,
   "skip_x_price_posts": true,
   "x_watch_skip_price_posts": false

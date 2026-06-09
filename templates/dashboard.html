@@ -113,7 +113,7 @@
         <button type="button" class="danger" id="btnStop">Durdur</button>
         <button type="button" id="btnRssRefresh">RSS çek</button>
         <button type="button" id="btnEnqueue">Otomatik kuyruğa (1)</button>
-        <button type="button" class="primary" id="btnOnce">Şimdi yayınla (sıradaki)</button>
+        <button type="button" class="primary" id="btnOnce">Şimdi yayınla (en yeni)</button>
         <button type="button" id="btnLogin">Chrome oturumu (X)</button>
         <button type="button" id="btnXWatch">X hesapları tara</button>
       </div>
@@ -151,7 +151,7 @@
 
     <section>
       <h2>3 — Yayına hazır (zamanlanmış paylaşım)</h2>
-      <p class="hint" style="margin-top:0" id="queueHint">RSS kontrol aralığında <strong>+1 haber</strong> eklenir; yayın aralığında sıradaki <strong>1 haber</strong> gider. Metni düzenleyin; yazarken <strong>Tab</strong> ile kelime tamamlama, <strong>Kaydet</strong> veya alan dışına tıklayınca kayıt.</p>
+      <p class="hint" style="margin-top:0" id="queueHint">RSS: kontrol aralığında <strong>+1 güncel haber</strong>, yayında <strong>en yeni RSS</strong> gider (eski RSS silinir). X alıntıları <strong>ayrı kuyruk</strong>; bekleyen alıntı varsa önce o yayınlanır (eski olsa da). Metni düzenleyin; <strong>Tab</strong> ile kelime tamamlama, <strong>Kaydet</strong> veya alan dışına tıklayınca kayıt.</p>
       <div id="queueCards"></div>
       <p class="hint" id="queueEmpty">Kuyruk boş. RSS’ten bir haber seçin veya zamanlayıcıyı başlatın.</p>
       <div class="row" style="margin-top:0.5rem">
@@ -184,11 +184,11 @@
           <input type="number" id="xWatchMax" min="0" max="5" value="1" style="max-width:5rem" />
           <div class="row" style="margin-top:0.5rem;flex-wrap:wrap;gap:0.5rem">
             <label style="margin:0">RSS max yaş (saat)</label>
-            <input type="number" id="rssMaxAge" min="0" max="168" value="36" style="max-width:4.5rem" title="Bundan eski RSS haberleri kuyruğa alınmaz" />
+            <input type="number" id="rssMaxAge" min="0" max="168" value="4" style="max-width:4.5rem" title="Bundan eski RSS haberleri kuyruğa alınmaz" />
             <label style="margin:0">Kuyruk max yaş (saat)</label>
-            <input type="number" id="queueMaxAge" min="1" max="336" value="48" style="max-width:4.5rem" title="Bekleyen eski haberler otomatik silinir" />
+            <input type="number" id="queueMaxAge" min="1" max="336" value="4" style="max-width:4.5rem" title="Bekleyen eski haberler otomatik silinir" />
             <label style="margin:0">Kuyruk max adet</label>
-            <input type="number" id="queueMaxItems" min="1" max="50" value="12" style="max-width:4rem" />
+            <input type="number" id="queueMaxItems" min="1" max="50" value="8" style="max-width:4rem" />
             <label style="margin:0">X max yaş (saat)</label>
             <input type="number" id="xWatchMaxAge" min="1" max="168" value="72" style="max-width:4.5rem" />
           </div>
@@ -243,9 +243,9 @@
       $("xWatchEnabled").checked = c.x_watch_enabled !== false;
       $("xWatchAccounts").value = (c.x_watch_accounts || []).join("\n");
       $("xWatchMax").value = c.x_watch_max_per_poll ?? 1;
-      $("rssMaxAge").value = c.rss_max_age_hours ?? 36;
-      $("queueMaxAge").value = c.queue_max_age_hours ?? 48;
-      $("queueMaxItems").value = c.queue_max_items ?? 12;
+      $("rssMaxAge").value = c.rss_max_age_hours ?? 4;
+      $("queueMaxAge").value = c.queue_max_age_hours ?? 4;
+      $("queueMaxItems").value = c.queue_max_items ?? 8;
       $("xWatchMaxAge").value = c.x_watch_max_age_hours ?? 72;
       await renderFeedListFromApi();
       renderXWatchList(c.x_watch_accounts || []);
@@ -674,9 +674,9 @@
             x_watch_accounts: $("xWatchAccounts").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
             x_watch_max_per_poll: parseInt($("xWatchMax").value, 10) || 0,
             x_watch_max_age_hours: parseFloat($("xWatchMaxAge").value) || 72,
-            rss_max_age_hours: parseFloat($("rssMaxAge").value) || 36,
-            queue_max_age_hours: parseFloat($("queueMaxAge").value) || 48,
-            queue_max_items: parseInt($("queueMaxItems").value, 10) || 12,
+            rss_max_age_hours: parseFloat($("rssMaxAge").value) || 4,
+            queue_max_age_hours: parseFloat($("queueMaxAge").value) || 4,
+            queue_max_items: parseInt($("queueMaxItems").value, 10) || 8,
           }),
         });
         setMsg("Ayarlar kaydedildi.");

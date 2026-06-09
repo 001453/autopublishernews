@@ -297,9 +297,10 @@ def default_config() -> dict[str, Any]:
         ],
         "x_watch_max_per_poll": 3,
         "x_watch_max_age_hours": 72,
-        "rss_max_age_hours": 36,
-        "queue_max_age_hours": 48,
-        "queue_max_items": 12,
+        "rss_max_age_hours": 4,
+        "queue_max_age_hours": 4,
+        "queue_max_items": 8,
+        "x_queue_max_items": 20,
         "skip_usdc_news": True,
         "skip_x_price_posts": True,
         "x_watch_skip_price_posts": False,
@@ -366,17 +367,21 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         out["x_watch_max_age_hours"] = 72.0
     try:
-        out["rss_max_age_hours"] = max(0.0, min(168.0, float(c.get("rss_max_age_hours", 36))))
+        out["rss_max_age_hours"] = max(0.0, min(168.0, float(c.get("rss_max_age_hours", 4))))
     except (TypeError, ValueError):
-        out["rss_max_age_hours"] = 36.0
+        out["rss_max_age_hours"] = 4.0
     try:
-        out["queue_max_age_hours"] = max(1.0, min(336.0, float(c.get("queue_max_age_hours", 48))))
+        out["queue_max_age_hours"] = max(1.0, min(336.0, float(c.get("queue_max_age_hours", 4))))
     except (TypeError, ValueError):
-        out["queue_max_age_hours"] = 48.0
+        out["queue_max_age_hours"] = 4.0
     try:
-        out["queue_max_items"] = max(1, min(50, int(c.get("queue_max_items", 12))))
+        out["queue_max_items"] = max(1, min(50, int(c.get("queue_max_items", 8))))
     except (TypeError, ValueError):
-        out["queue_max_items"] = 12
+        out["queue_max_items"] = 8
+    try:
+        out["x_queue_max_items"] = max(1, min(50, int(c.get("x_queue_max_items", 20))))
+    except (TypeError, ValueError):
+        out["x_queue_max_items"] = 20
 
     for flag in ("skip_usdc_news", "skip_x_price_posts", "x_watch_skip_price_posts"):
         v = c.get(flag, out[flag])
@@ -2398,30 +2403,56 @@ def fetch_entries(feed_urls: list[str]) -> list[tuple[str, str, str]]:
 def rss_max_age_hours(cfg: dict[str, Any] | None = None) -> float:
     c = cfg if cfg is not None else read_panel_config()
     try:
-        return max(0.0, min(168.0, float(c.get("rss_max_age_hours", 36))))
+        return max(0.0, min(168.0, float(c.get("rss_max_age_hours", 4))))
     except (TypeError, ValueError):
-        return 36.0
+        return 4.0
 
 
 def queue_max_age_hours(cfg: dict[str, Any] | None = None) -> float:
     c = cfg if cfg is not None else read_panel_config()
     try:
-        return max(1.0, min(336.0, float(c.get("queue_max_age_hours", 48))))
+        return max(1.0, min(336.0, float(c.get("queue_max_age_hours", 4))))
     except (TypeError, ValueError):
-        return 48.0
+        return 4.0
 
 
 def queue_max_items(cfg: dict[str, Any] | None = None) -> int:
     c = cfg if cfg is not None else read_panel_config()
     try:
-        return max(1, min(50, int(c.get("queue_max_items", 12))))
+        return max(1, min(50, int(c.get("queue_max_items", 8))))
     except (TypeError, ValueError):
-        return 12
+        return 8
 
 
-def count_post_queue() -> int:
+def x_queue_max_items(cfg: dict[str, Any] | None = None) -> int:
+    """X alıntı kuyruğu — RSS'ten ayrı kapasite."""
+    c = cfg if cfg is not None else read_panel_config()
+    try:
+        return max(1, min(50, int(c.get("x_queue_max_items", 20))))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _sql_rss_kind_filter() -> str:
+    return "(post_kind IS NULL OR post_kind = 'rss')"
+
+
+def _sql_x_kind_filter() -> str:
+    return "post_kind = 'x_quote'"
+
+
+def count_post_queue(*, kind: str = "all") -> int:
     with db_session() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM post_queue").fetchone()
+        if kind == "rss":
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM post_queue WHERE {_sql_rss_kind_filter()}"
+            ).fetchone()
+        elif kind == "x_quote":
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM post_queue WHERE {_sql_x_kind_filter()}"
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM post_queue").fetchone()
         return int(row[0] or 0) if row else 0
 
 
@@ -2429,32 +2460,98 @@ def prune_stale_queue_items(
     *,
     log: Callable[[str], None] | None = None,
 ) -> int:
-    """Kuyrukta çok uzun bekleyen haberleri siler (eski haber yayınlanmasın)."""
+    """RSS kuyruğunda çok uzun bekleyen haberleri siler. X alıntıları korunur."""
     hours = int(queue_max_age_hours())
     with db_session() as conn:
         cur = conn.execute(
-            "DELETE FROM post_queue WHERE datetime(created_at) < datetime('now', ?)",
+            "DELETE FROM post_queue WHERE datetime(created_at) < datetime('now', ?) "
+            f"AND {_sql_rss_kind_filter()}",
             (f"-{hours} hours",),
         )
         conn.commit()
         n = int(cur.rowcount or 0)
     if n and log:
-        _emit(log, f"Kuyruktan {n} eski haber silindi (>{hours} saat bekleyen).")
+        _emit(log, f"RSS kuyruğundan {n} eski haber silindi (>{hours} saat bekleyen).")
     return n
+
+
+def prune_excess_queue_items(
+    *,
+    log: Callable[[str], None] | None = None,
+) -> int:
+    """Kapasite aşıldığında önce eski RSS haberlerini siler; X alıntıları ayrı kotada kalır."""
+    dropped = 0
+    cap_rss = queue_max_items()
+    cap_x = x_queue_max_items()
+    with db_session() as conn:
+        rss_n = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM post_queue WHERE {_sql_rss_kind_filter()}"
+            ).fetchone()[0]
+            or 0
+        )
+        if rss_n > cap_rss:
+            to_drop = rss_n - cap_rss
+            cur = conn.execute(
+                "DELETE FROM post_queue WHERE id IN ("
+                f"SELECT id FROM post_queue WHERE {_sql_rss_kind_filter()} "
+                "ORDER BY id ASC LIMIT ?"
+                ")",
+                (to_drop,),
+            )
+            dropped += int(cur.rowcount or 0)
+
+        x_n = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM post_queue WHERE {_sql_x_kind_filter()}"
+            ).fetchone()[0]
+            or 0
+        )
+        if x_n > cap_x:
+            to_drop = x_n - cap_x
+            cur = conn.execute(
+                "DELETE FROM post_queue WHERE id IN ("
+                f"SELECT id FROM post_queue WHERE {_sql_x_kind_filter()} "
+                "ORDER BY id ASC LIMIT ?"
+                ")",
+                (to_drop,),
+            )
+            dropped += int(cur.rowcount or 0)
+        conn.commit()
+    if dropped and log:
+        _emit(
+            log,
+            f"Kuyruktan {dropped} eski kayıt çıkarıldı (RSS≤{cap_rss}, X≤{cap_x}).",
+        )
+    return dropped
+
+
+def maintain_post_queue(
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """RSS kuyruğunu temizler; X alıntı kuyruğu yaş sınırından muaf."""
+    prune_stale_queue_items(log=log)
+    prune_excess_queue_items(log=log)
 
 
 def queue_has_room(
     *,
     log: Callable[[str], None] | None = None,
+    kind: str = "rss",
 ) -> bool:
-    cap = queue_max_items()
-    n = count_post_queue()
+    maintain_post_queue(log=log)
+    if kind == "x_quote":
+        cap = x_queue_max_items()
+        n = count_post_queue(kind="x_quote")
+        label = "X alıntı"
+    else:
+        cap = queue_max_items()
+        n = count_post_queue(kind="rss")
+        label = "RSS"
     if n >= cap:
         if log:
-            _emit(
-                log,
-                f"Kuyruk dolu ({n}/{cap}); yeni ekleme bekletiliyor (önce yayınlansın).",
-            )
+            _emit(log, f"{label} kuyruğu dolu ({n}/{cap}); yeni ekleme bekletiliyor.")
         return False
     return True
 
@@ -3066,8 +3163,8 @@ def enqueue_next_unposted(
     log: Callable[[str], None] | None = None,
 ) -> int:
     """Paylaşılmamış ve kuyrukta olmayan en güncel 1 haberi hazırlayıp post_queue tablosuna ekler. Dönüş: 1 veya 0."""
-    prune_stale_queue_items(log=log)
-    if not queue_has_room(log=log):
+    maintain_post_queue(log=log)
+    if not queue_has_room(log=log, kind="rss"):
         return 0
     cfg = read_panel_config()
     template = str(cfg.get("post_template", "{title}\n{link}"))
@@ -3175,10 +3272,12 @@ def rebuild_post_queue_bodies(
 
 
 def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
+    next_head = peek_queue_head()
+    next_id = next_head[0] if next_head else None
     with db_session() as conn:
         cur = conn.execute(
             "SELECT id, url, title, body, created_at, quote_url, post_kind "
-            "FROM post_queue ORDER BY id ASC LIMIT ?",
+            "FROM post_queue ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         rows: list[dict[str, Any]] = []
@@ -3187,6 +3286,7 @@ def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
             pos += 1
             bid, url, title, body, created_at, quote_url, post_kind = r
             body_s = body or ""
+            kind = post_kind or "rss"
             rows.append(
                 {
                     "id": bid,
@@ -3204,9 +3304,9 @@ def list_post_queue(*, limit: int = 100) -> list[dict[str, Any]]:
                     "body_preview": body_s,
                     "created_at": created_at or "",
                     "quote_url": quote_url or "",
-                    "post_kind": post_kind or "rss",
+                    "post_kind": kind,
                     "position": pos,
-                    "is_next": pos == 1,
+                    "is_next": bid == next_id,
                 }
             )
         return rows
@@ -3294,11 +3394,19 @@ def update_post_queue_item(row_id: int, body: str) -> bool:
 
 
 def peek_queue_head() -> tuple[int, str, str, str, str] | None:
+    """Sıradaki yayın: önce bekleyen X alıntısı (eski olsa da), yoksa en yeni RSS."""
     with db_session() as conn:
         cur = conn.execute(
-            "SELECT id, url, title, body, quote_url FROM post_queue ORDER BY id ASC LIMIT 1"
+            "SELECT id, url, title, body, quote_url FROM post_queue "
+            f"WHERE {_sql_x_kind_filter()} ORDER BY id ASC LIMIT 1"
         )
         row = cur.fetchone()
+        if not row:
+            cur = conn.execute(
+                "SELECT id, url, title, body, quote_url FROM post_queue "
+                f"WHERE {_sql_rss_kind_filter()} ORDER BY id DESC LIMIT 1"
+            )
+            row = cur.fetchone()
         if not row:
             return None
         return (
@@ -3316,7 +3424,7 @@ def publish_one_from_queue(
 ) -> int:
     """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası."""
     load_dotenv()
-    prune_stale_queue_items(log=log)
+    maintain_post_queue(log=log)
     head = peek_queue_head()
     if not head:
         _emit(log, "Gönderim kuyruğu boş.")

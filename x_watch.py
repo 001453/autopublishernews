@@ -24,7 +24,6 @@ from engine import (
     ensure_bot_chrome_cdp,
     normalize_url,
     prepare_x_quote_payload,
-    prune_stale_queue_items,
     queue_has_room,
     read_panel_config,
     recover_bot_chrome_after_cdp_failure,
@@ -441,8 +440,7 @@ def poll_x_watch_accounts(*, log: Callable[[str], None] | None = None) -> int:
     if cap <= 0:
         return 0
 
-    prune_stale_queue_items(log=log)
-    if not queue_has_room(log=log):
+    if not queue_has_room(log=log, kind="x_quote"):
         return 0
 
     if use_existing_chrome() and not cdp_is_available():
