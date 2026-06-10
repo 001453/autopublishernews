@@ -231,7 +231,12 @@ def _is_repost_article(article_locator: Any) -> bool:
         return False
 
 
-def _tweet_url_for_handle(handle: str, href: str) -> tuple[str, str] | None:
+def _tweet_url_for_handle(
+    handle: str,
+    href: str,
+    *,
+    from_profile: bool = False,
+) -> tuple[str, str] | None:
     href = (href or "").strip()
     if not href:
         return None
@@ -242,10 +247,75 @@ def _tweet_url_for_handle(handle: str, href: str) -> tuple[str, str] | None:
         return None
     tid = m.group(1)
     path = urlparse_path(href)
-    if path and f"/{handle.lower()}/" not in path.lower():
-        return None
+    if path:
+        own = f"/{handle.lower()}/" in path.lower()
+        i_status = "/i/status/" in path.lower()
+        if not own and not (from_profile and i_status):
+            return None
     url = f"https://x.com/{handle}/status/{tid}"
     return tid, url
+
+
+def _pick_status_from_article(art: Any, handle: str) -> tuple[str, str] | None:
+    """Profil zaman çizelgesinde gönderi kimliği; önce /{handle}/status/, sonra /i/status/."""
+    links = art.locator('a[href*="/status/"]')
+    i_status: tuple[str, str] | None = None
+    for j in range(min(links.count(), 12)):
+        href = links.nth(j).get_attribute("href") or ""
+        parsed = _tweet_url_for_handle(handle, href, from_profile=False)
+        if parsed:
+            return parsed
+        if i_status is None:
+            parsed = _tweet_url_for_handle(handle, href, from_profile=True)
+            if parsed:
+                i_status = parsed
+    return i_status
+
+
+def _extract_article_text(art: Any) -> str:
+    parts: list[str] = []
+    try:
+        nodes = art.locator('[data-testid="tweetText"]')
+        for i in range(min(nodes.count(), 4)):
+            try:
+                t = (nodes.nth(i).inner_text(timeout=2500) or "").strip()
+            except PlaywrightTimeout:
+                t = ""
+            if t:
+                parts.append(t)
+    except Exception:
+        pass
+    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if len(text) >= 4:
+        return text
+    try:
+        label = (art.get_attribute("aria-label") or "").strip()
+        if label:
+            text = re.sub(r"\s+", " ", label).strip()
+            if len(text) >= 4:
+                return text
+    except Exception:
+        pass
+    return text
+
+
+def _fetch_tweet_syndication_text(tweet_id: str) -> str:
+    """Video gönderilerde DOM metni boş kalırsa syndication yedek."""
+    tid = (tweet_id or "").strip()
+    if not tid.isdigit():
+        return ""
+    url = f"https://cdn.syndication.twimg.com/tweet-result?id={tid}&lang=en"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; rss-news-bot/1.0)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
+        return ""
+    text = str(data.get("text") or "").strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def fetch_profile_posts_playwright(page: Page, handle: str, *, limit: int = 8) -> list[dict[str, str]]:
@@ -272,24 +342,16 @@ def fetch_profile_posts_playwright(page: Page, handle: str, *, limit: int = 8) -
         pinned = _is_pinned_article(art)
         if _is_repost_article(art):
             continue
-        tweet_id = ""
-        tweet_url = ""
-        links = art.locator('a[href*="/status/"]')
-        for j in range(min(links.count(), 12)):
-            href = links.nth(j).get_attribute("href") or ""
-            parsed = _tweet_url_for_handle(handle, href)
-            if parsed:
-                tweet_id, tweet_url = parsed
-                break
-        if not tweet_id or tweet_id in seen_ids:
+        parsed = _pick_status_from_article(art, handle)
+        if not parsed:
+            continue
+        tweet_id, tweet_url = parsed
+        if tweet_id in seen_ids:
             continue
         seen_ids.add(tweet_id)
-        text = ""
-        try:
-            text = art.locator('[data-testid="tweetText"]').first.inner_text(timeout=4000)
-        except PlaywrightTimeout:
-            pass
-        text = re.sub(r"\s+", " ", (text or "")).strip()
+        text = _extract_article_text(art)
+        if len(text) < 4:
+            text = _fetch_tweet_syndication_text(tweet_id)
         if len(text) < 4:
             continue
         out.append(
