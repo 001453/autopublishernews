@@ -54,15 +54,30 @@ function Open-CdpTab([string]$TargetUrl) {
 }
 
 function Stop-BotProfileChrome {
+    $profileKey = $profile.TrimEnd('\')
     Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -like "*user-data-dir=$profile*") } |
+        Where-Object {
+            $cmd = $_.CommandLine
+            $cmd -and ($cmd -like "*$profileKey*") -and ($cmd -like "*remote-debugging-port=$port*")
+        } |
         ForEach-Object {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
     Start-Sleep -Seconds 2
 }
 
-if (Test-CdpReady) {
+$stale = Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+        $cmd = $_.CommandLine
+        $cmd -and ($cmd -like "*$($profile.TrimEnd('\'))*") -and ($cmd -like "*remote-debugging-port=$port*")
+    } |
+    Select-Object -First 1
+
+# -ForceRestart: port acik olsa bile donmus Chrome'u kapat (Playwright timeout dongusunu kirar).
+if ($ForceRestart -and ((Test-CdpReady) -or $stale)) {
+    Write-Host "Bot Chrome yeniden baslatiliyor (-ForceRestart)..."
+    Stop-BotProfileChrome
+} elseif (Test-CdpReady) {
     Write-Host "Bot Chrome CDP aktif (port $port)."
     if ($Url -and $Url -ne "https://x.com/login") {
         if (Open-CdpTab -TargetUrl $Url) {
@@ -72,25 +87,9 @@ if (Test-CdpReady) {
         Write-Host "Mevcut sekmeler korunuyor (gereksiz login sekmesi acilmadi)."
     }
     exit 0
-}
-
-$stale = Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and ($_.CommandLine -like "*user-data-dir=$profile*") } |
-    Select-Object -First 1
-
-if ($stale -and -not (Test-CdpReady)) {
-    if ($ForceRestart) {
-        Write-Host "Eski bot Chrome kapatiliyor (CDP kapali)..."
-        Stop-BotProfileChrome
-    } else {
-        Write-Host "x_profile Chrome acik ama CDP kapali. Tekrar: .\scripts\start_bot_chrome.ps1 -ForceRestart"
-        exit 1
-    }
-}
-
-if ($ForceRestart -and (Test-CdpReady -or $stale)) {
-    Write-Host "Bot Chrome yeniden baslatiliyor (-ForceRestart)..."
-    Stop-BotProfileChrome
+} elseif ($stale) {
+    Write-Host "x_profile Chrome acik ama CDP kapali. Tekrar: .\scripts\start_bot_chrome.ps1 -ForceRestart"
+    exit 1
 }
 
 Write-Host "Bot Chrome aciliyor: profil=$profile port=$port"
