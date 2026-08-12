@@ -208,6 +208,10 @@ class ManualPostPending(Exception):
     """Chrome'da manuel gönderim sekmesi açıldı; kuyruk silinmemeli."""
 
 
+class QuotePublishSkipped(RuntimeError):
+    """X alıntı/RT yapılamadı (buton kapalı, timeout vb.); kuyruktan atlanmalı."""
+
+
 class TurkishContentRequired(RuntimeError):
     """İngilizce kaynak için Türkçe özet üretilemedi (çoğunlukla OPENAI_API_KEY eksik)."""
 
@@ -2828,13 +2832,49 @@ def post_tweet_browser(text: str, *, log: Callable[[str], None] | None = None) -
             _post_via_intent(page, text)
 
 
+def _retweet_button_blocked(rt: Any) -> bool:
+    """X yeniden gönder butonu disabled / aria-disabled ise True."""
+    try:
+        if rt.is_disabled():
+            return True
+    except Exception:
+        pass
+    try:
+        aria = (rt.get_attribute("aria-disabled") or "").strip().lower()
+        if aria in ("true", "1"):
+            return True
+    except Exception:
+        pass
+    try:
+        disabled_attr = rt.get_attribute("disabled")
+        if disabled_attr is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _quote_tweet_on_page(page: Any, tweet_url: str, text: str) -> None:
     _prepare_x_compose_session(page)
     page.goto(tweet_url.strip(), wait_until="domcontentloaded", timeout=90_000)
     page.wait_for_timeout(2000)
     rt = page.locator('[data-testid="retweet"]').first
-    rt.wait_for(state="visible", timeout=25_000)
-    rt.click(timeout=15_000)
+    try:
+        rt.wait_for(state="visible", timeout=25_000)
+    except PlaywrightTimeout as ex:
+        raise QuotePublishSkipped(
+            "Yeniden gönder butonu görünmüyor (oturum/sayfa); alıntı atlanacak."
+        ) from ex
+    if _retweet_button_blocked(rt):
+        raise QuotePublishSkipped(
+            "Yeniden gönder butonu kapalı (X kısıtı / disabled); alıntı atlanacak."
+        )
+    try:
+        rt.click(timeout=15_000)
+    except PlaywrightTimeout as ex:
+        raise QuotePublishSkipped(
+            "Yeniden gönder tıklanamadı; alıntı atlanacak."
+        ) from ex
     page.wait_for_timeout(900)
     quoted = False
     for sel in ('[data-testid="quoteTweet"]', '[data-testid="app-bar-quote"]'):
@@ -2853,7 +2893,7 @@ def _quote_tweet_on_page(page: Any, tweet_url: str, text: str) -> None:
         except PlaywrightTimeout:
             pass
     if not quoted:
-        raise RuntimeError("Alıntı tweet menüsü açılamadı.")
+        raise QuotePublishSkipped("Alıntı tweet menüsü açılamadı; alıntı atlanacak.")
     page.wait_for_timeout(1200)
     _fill_tweet_editor(page, text)
     _click_tweet_submit(page)
@@ -3418,11 +3458,55 @@ def peek_queue_head() -> tuple[int, str, str, str, str] | None:
         )
 
 
+def peek_rss_queue_head() -> tuple[int, str, str, str, str] | None:
+    """Sıradaki RSS haberi (X alıntılarını yok sayar)."""
+    with db_session() as conn:
+        cur = conn.execute(
+            "SELECT id, url, title, body, quote_url FROM post_queue "
+            f"WHERE {_sql_rss_kind_filter()} ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return (
+            int(row[0]),
+            str(row[1]),
+            str(row[2] or ""),
+            str(row[3] or ""),
+            str(row[4] or ""),
+        )
+
+
+def _drop_failed_quote_item(
+    qid: int,
+    key_url: str,
+    title: str,
+    *,
+    log: Callable[[str], None] | None = None,
+    reason: str = "",
+) -> None:
+    """Başarısız alıntıyı kuyruktan sil + posted işaretle (tekrar eklenmesin)."""
+    with db_session() as conn:
+        mark_posted(conn, key_url, title)
+        conn.execute("DELETE FROM post_queue WHERE id = ?", (qid,))
+        conn.commit()
+    tip = (title or key_url or "")[:60]
+    msg = f"Alıntı atlandı (RT yok/kapalı): {tip}"
+    if reason:
+        msg += f" — {reason}"
+    msg += ". Sıradaki RSS deneniyor."
+    _emit(log, msg)
+
+
 def publish_one_from_queue(
     *,
     log: Callable[[str], None] | None = None,
+    _skip_budget: int = 8,
 ) -> int:
-    """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası."""
+    """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası.
+
+    X alıntısı RT edilemezse kuyruktan düşürülür ve aynı turda sıradaki RSS denenir.
+    """
     load_dotenv()
     maintain_post_queue(log=log)
     head = peek_queue_head()
@@ -3430,6 +3514,7 @@ def publish_one_from_queue(
         _emit(log, "Gönderim kuyruğu boş.")
         return 0
     qid, key_url, title, body, quote_url = head
+    is_quote = bool((quote_url or "").strip())
     cfg = read_panel_config()
     destination = cfg.get("destination", "x_browser")
 
@@ -3466,16 +3551,32 @@ def publish_one_from_queue(
     text_x = clip_for_publish(body)
 
     def _post_once() -> None:
-        if (quote_url or "").strip():
+        if is_quote:
             post_quote_tweet_browser(quote_url.strip(), text_x, log=log)
         else:
             post_tweet_browser(text_x, log=log)
+
+    def _skip_quote_and_try_rss(reason: str) -> int:
+        if not is_quote:
+            return 2
+        _drop_failed_quote_item(qid, key_url, title, log=log, reason=reason)
+        if _skip_budget <= 0:
+            _emit(log, "Alıntı atlama limiti doldu; bu turda RSS denenmedi.")
+            return 2
+        # Kuyrukta RSS varsa onu yayınla; yoksa bir sonraki alıntıya bak.
+        nxt = peek_rss_queue_head() or peek_queue_head()
+        if not nxt:
+            _emit(log, "Alıntı atlandı; yayınlanacak başka öğe yok.")
+            return 0
+        return publish_one_from_queue(log=log, _skip_budget=_skip_budget - 1)
 
     try:
         _post_once()
     except ManualPostPending:
         _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
         return 3
+    except QuotePublishSkipped as ex:
+        return _skip_quote_and_try_rss(str(ex))
     except (PlaywrightTimeout, Exception) as ex:
         if _is_cdp_connect_timeout(ex) and recover_bot_chrome_after_cdp_failure(log=log):
             try:
@@ -3483,12 +3584,27 @@ def publish_one_from_queue(
             except ManualPostPending:
                 _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
                 return 3
+            except QuotePublishSkipped as ex2:
+                return _skip_quote_and_try_rss(str(ex2))
             except PlaywrightTimeout as ex2:
+                if is_quote:
+                    return _skip_quote_and_try_rss(str(ex2))
                 _emit(log, "Tarayıcı zaman aşımı: " + str(ex2))
                 return 2
             except Exception as ex2:
+                if is_quote:
+                    return _skip_quote_and_try_rss(str(ex2))
                 _emit(log, "Gönderim hatası: " + str(ex2))
                 return 2
+            # CDP recover sonrası başarı
+            _finalize_success()
+            if is_quote:
+                _emit(log, "Alıntı tweet yayınlandı: " + quote_url)
+            else:
+                _emit(log, "Tweet gönderildi (kuyruk): " + key_url)
+            return 1
+        if is_quote:
+            return _skip_quote_and_try_rss(str(ex))
         if isinstance(ex, PlaywrightTimeout):
             _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
             return 2
@@ -3496,7 +3612,7 @@ def publish_one_from_queue(
         return 2
 
     _finalize_success()
-    if (quote_url or "").strip():
+    if is_quote:
         _emit(log, "Alıntı tweet yayınlandı: " + quote_url)
     else:
         _emit(log, "Tweet gönderildi (kuyruk): " + key_url)
