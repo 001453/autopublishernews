@@ -45,6 +45,8 @@ from engine import (
     peek_queue_head,
     preview_next_enqueue_post,
     publish_one_from_queue,
+    publish_rss_per_rt,
+    next_publish_kind,
     read_panel_config,
     rebuild_post_queue_bodies,
     run_once,
@@ -227,6 +229,8 @@ async def api_status() -> dict[str, Any]:
         "next_rss_at": nra if running else "",
         "next_publish_at": npa if running and cfg.get("use_post_queue", True) else "",
         "next_queue_title": (head[2][:80] if head else ""),
+        "next_publish_kind": next_publish_kind(),
+        "publish_rss_per_rt": publish_rss_per_rt(cfg),
         "x_watch_enabled": x_watch_enabled(cfg),
         "x_watch_accounts": effective_x_watch_accounts(cfg),
         "x_watch_count": len(effective_x_watch_accounts(cfg)),
@@ -346,6 +350,7 @@ class ConfigBody(BaseModel):
     rss_max_age_hours: float | None = None
     queue_max_age_hours: float | None = None
     queue_max_items: int | None = None
+    publish_rss_per_rt: int | None = None
 
 
 @app.post("/api/x-watch/poll")

@@ -305,6 +305,7 @@ def default_config() -> dict[str, Any]:
         "queue_max_age_hours": 4,
         "queue_max_items": 8,
         "x_queue_max_items": 20,
+        "publish_rss_per_rt": 3,
         "skip_usdc_news": True,
         "skip_x_price_posts": True,
         "x_watch_skip_price_posts": False,
@@ -386,6 +387,10 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
         out["x_queue_max_items"] = max(1, min(50, int(c.get("x_queue_max_items", 20))))
     except (TypeError, ValueError):
         out["x_queue_max_items"] = 20
+    try:
+        out["publish_rss_per_rt"] = max(1, min(20, int(c.get("publish_rss_per_rt", 3))))
+    except (TypeError, ValueError):
+        out["publish_rss_per_rt"] = 3
 
     for flag in ("skip_usdc_news", "skip_x_price_posts", "x_watch_skip_price_posts"):
         v = c.get(flag, out[flag])
@@ -1119,6 +1124,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         "handle TEXT PRIMARY KEY, "
         "baseline_at TEXT DEFAULT (datetime('now'))"
         ")"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS publish_state ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "rss_since_rt INTEGER NOT NULL DEFAULT 3)"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO publish_state (id, rss_since_rt) VALUES (1, 3)"
     )
     qcols = {row[1] for row in conn.execute("PRAGMA table_info(post_queue)")}
     if "quote_url" not in qcols:
@@ -2437,6 +2450,81 @@ def x_queue_max_items(cfg: dict[str, Any] | None = None) -> int:
         return 20
 
 
+def publish_rss_per_rt(cfg: dict[str, Any] | None = None) -> int:
+    """Her 1 RT (alıntı) sonrası kaç RSS haberi yayınlanacak."""
+    c = cfg if cfg is not None else read_panel_config()
+    try:
+        return max(1, min(20, int(c.get("publish_rss_per_rt", 3))))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _ensure_publish_state(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS publish_state ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "rss_since_rt INTEGER NOT NULL DEFAULT 3)"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO publish_state (id, rss_since_rt) VALUES (1, 3)"
+    )
+
+
+def _rss_since_rt(conn: sqlite3.Connection) -> int:
+    _ensure_publish_state(conn)
+    row = conn.execute(
+        "SELECT rss_since_rt FROM publish_state WHERE id = 1"
+    ).fetchone()
+    return int(row[0]) if row else 3
+
+
+def _record_publish_mix(is_quote: bool) -> None:
+    """RT başarılıysa sayaç sıfır; RSS başarılıysa 1 artar (üst sınır = N haber)."""
+    per = publish_rss_per_rt()
+    with db_session() as conn:
+        _ensure_publish_state(conn)
+        if is_quote:
+            conn.execute("UPDATE publish_state SET rss_since_rt = 0 WHERE id = 1")
+        else:
+            conn.execute(
+                "UPDATE publish_state SET rss_since_rt = MIN(rss_since_rt + 1, ?) WHERE id = 1",
+                (per,),
+            )
+        conn.commit()
+
+
+def next_publish_kind() -> str:
+    """Sıradaki yayın türü: x_quote veya rss (kuyruk doluluğuna bakmaz)."""
+    per = publish_rss_per_rt()
+    with db_session() as conn:
+        since = _rss_since_rt(conn)
+    return "x_quote" if since >= per else "rss"
+
+
+def _queue_row_tuple(
+    row: sqlite3.Row | tuple[Any, ...] | None,
+) -> tuple[int, str, str, str, str] | None:
+    if not row:
+        return None
+    return (
+        int(row[0]),
+        str(row[1]),
+        str(row[2] or ""),
+        str(row[3] or ""),
+        str(row[4] or ""),
+    )
+
+
+def peek_quote_queue_head() -> tuple[int, str, str, str, str] | None:
+    """En yeni X alıntısı (RT)."""
+    with db_session() as conn:
+        cur = conn.execute(
+            "SELECT id, url, title, body, quote_url FROM post_queue "
+            f"WHERE {_sql_x_kind_filter()} ORDER BY id DESC LIMIT 1"
+        )
+        return _queue_row_tuple(cur.fetchone())
+
+
 def _sql_rss_kind_filter() -> str:
     return "(post_kind IS NULL OR post_kind = 'rss')"
 
@@ -3434,47 +3522,34 @@ def update_post_queue_item(row_id: int, body: str) -> bool:
 
 
 def peek_queue_head() -> tuple[int, str, str, str, str] | None:
-    """Sıradaki yayın: önce bekleyen X alıntısı (eski olsa da), yoksa en yeni RSS."""
+    """Sıradaki yayın: 1 RT + N en yeni haber. Tercih edilen tür yoksa diğerine düşer."""
+    per = publish_rss_per_rt()
     with db_session() as conn:
-        cur = conn.execute(
+        since = _rss_since_rt(conn)
+        want_rt = since >= per
+        quote = conn.execute(
             "SELECT id, url, title, body, quote_url FROM post_queue "
-            f"WHERE {_sql_x_kind_filter()} ORDER BY id ASC LIMIT 1"
-        )
-        row = cur.fetchone()
-        if not row:
-            cur = conn.execute(
-                "SELECT id, url, title, body, quote_url FROM post_queue "
-                f"WHERE {_sql_rss_kind_filter()} ORDER BY id DESC LIMIT 1"
-            )
-            row = cur.fetchone()
-        if not row:
-            return None
-        return (
-            int(row[0]),
-            str(row[1]),
-            str(row[2] or ""),
-            str(row[3] or ""),
-            str(row[4] or ""),
-        )
+            f"WHERE {_sql_x_kind_filter()} ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        rss = conn.execute(
+            "SELECT id, url, title, body, quote_url FROM post_queue "
+            f"WHERE {_sql_rss_kind_filter()} ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if want_rt:
+            row = quote or rss
+        else:
+            row = rss or quote
+        return _queue_row_tuple(row)
 
 
 def peek_rss_queue_head() -> tuple[int, str, str, str, str] | None:
-    """Sıradaki RSS haberi (X alıntılarını yok sayar)."""
+    """Sıradaki en yeni RSS haberi (X alıntılarını yok sayar)."""
     with db_session() as conn:
         cur = conn.execute(
             "SELECT id, url, title, body, quote_url FROM post_queue "
             f"WHERE {_sql_rss_kind_filter()} ORDER BY id DESC LIMIT 1"
         )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return (
-            int(row[0]),
-            str(row[1]),
-            str(row[2] or ""),
-            str(row[3] or ""),
-            str(row[4] or ""),
-        )
+        return _queue_row_tuple(cur.fetchone())
 
 
 def _drop_failed_quote_item(
@@ -3494,7 +3569,7 @@ def _drop_failed_quote_item(
     msg = f"Alıntı atlandı (RT yok/kapalı): {tip}"
     if reason:
         msg += f" — {reason}"
-    msg += ". Sıradaki RSS deneniyor."
+    msg += ". Sıradaki gönderi deneniyor."
     _emit(log, msg)
 
 
@@ -3505,7 +3580,8 @@ def publish_one_from_queue(
 ) -> int:
     """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası.
 
-    X alıntısı RT edilemezse kuyruktan düşürülür ve aynı turda sıradaki RSS denenir.
+    Karışım: 1 RT (alıntı) + N en yeni RSS. RT edilemezse kuyruktan düşülür ve
+    aynı turda sıradaki öğe (tercihen haber, yoksa başka alıntı) denenir.
     """
     load_dotenv()
     maintain_post_queue(log=log)
@@ -3517,12 +3593,21 @@ def publish_one_from_queue(
     is_quote = bool((quote_url or "").strip())
     cfg = read_panel_config()
     destination = cfg.get("destination", "x_browser")
+    per = publish_rss_per_rt(cfg)
+    with db_session() as conn:
+        since = _rss_since_rt(conn)
+    if is_quote:
+        _emit(log, f"Karışım: RT (1 RT + {per} haber).")
+    else:
+        slot = min(since + 1, per)
+        _emit(log, f"Karışım: haber {slot}/{per} (1 RT + {per} haber).")
 
     def _finalize_success() -> None:
         with db_session() as conn:
             mark_posted(conn, key_url, title)
             conn.execute("DELETE FROM post_queue WHERE id = ?", (qid,))
             conn.commit()
+        _record_publish_mix(is_quote)
 
     if destination == "file":
         try:
@@ -3561,10 +3646,9 @@ def publish_one_from_queue(
             return 2
         _drop_failed_quote_item(qid, key_url, title, log=log, reason=reason)
         if _skip_budget <= 0:
-            _emit(log, "Alıntı atlama limiti doldu; bu turda RSS denenmedi.")
+            _emit(log, "Alıntı atlama limiti doldu; bu turda başka öğe denenmedi.")
             return 2
-        # Kuyrukta RSS varsa onu yayınla; yoksa bir sonraki alıntıya bak.
-        nxt = peek_rss_queue_head() or peek_queue_head()
+        nxt = peek_queue_head()
         if not nxt:
             _emit(log, "Alıntı atlandı; yayınlanacak başka öğe yok.")
             return 0

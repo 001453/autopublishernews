@@ -40,6 +40,7 @@
   "queue_max_age_hours": 4.0,
   "queue_max_items": 8,
   "x_queue_max_items": 20,
+  "publish_rss_per_rt": 3,
   "skip_usdc_news": true,
   "skip_x_price_posts": true,
   "x_watch_skip_price_posts": false
