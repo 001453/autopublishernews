@@ -1,5 +1,10 @@
-# Oturum acilisinda veya Gorev Zamanlayicisi: Bot Chrome + panel
+﻿# Oturum acilisinda veya Gorev Zamanlayicisi: Bot Chrome + panel
 # Kullanim: .\scripts\start_all_bot.ps1
+#           .\scripts\start_all_bot.ps1 -ForceRestart
+
+param(
+    [switch]$ForceRestart
+)
 
 $ErrorActionPreference = "Continue"
 $projRoot = Split-Path $PSScriptRoot -Parent
@@ -43,7 +48,14 @@ function Test-CdpHealthy {
     }
 }
 
-# Panel zaten aciksa atla
+if ($ForceRestart) {
+    Write-Log "ForceRestart: 8765 ve 9333 kapatiliyor."
+    Get-NetTCPConnection -LocalPort 8765, 9333 -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 3
+}
+
+# Panel zaten aciksa atla (ForceRestart sonrasi kapali olmali)
 $panelUp = Test-PortOpen 8765
 if ($panelUp) {
     Write-Log "Panel zaten calisiyor (8765)."
@@ -74,14 +86,18 @@ if ($panelUp) {
     }
 }
 
-# Bot Chrome (CDP 9333) — port acik ama donmus CDP icin de kontrol
+# Bot Chrome (CDP 9333) - port acik ama donmus CDP icin de kontrol
 $cdpPortOpen = Test-PortOpen 9333
 $cdpHealthy = if ($cdpPortOpen) { Test-CdpHealthy } else { $false }
 
-if ($cdpHealthy) {
+if ($cdpHealthy -and -not $ForceRestart) {
     Write-Log "Bot Chrome CDP saglikli (9333)."
-} elseif ($cdpPortOpen) {
-    Write-Log "9333 acik ama CDP yanit vermiyor (donmus?) -> ForceRestart"
+} elseif ($cdpPortOpen -or $ForceRestart) {
+    if ($ForceRestart) {
+        Write-Log "ForceRestart: Bot Chrome yeniden baslatiliyor."
+    } else {
+        Write-Log "9333 acik ama CDP yanit vermiyor (donmus?) -> ForceRestart"
+    }
     try {
         & "$PSScriptRoot\start_bot_chrome.ps1" -ForceRestart *>> $logFile
         Write-Log "start_bot_chrome.ps1 -ForceRestart calistirildi."

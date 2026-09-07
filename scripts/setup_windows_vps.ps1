@@ -1,4 +1,4 @@
-# Ilk kurulum: venv + pip + playwright (Chrome ayri kurulmali)
+﻿# Ilk kurulum: venv + pip + playwright (Chrome ayri kurulmali)
 # Kullanim: cd C:\autopublishernews ; .\scripts\setup_windows_vps.ps1
 
 $ErrorActionPreference = "Stop"
@@ -8,7 +8,7 @@ Set-Location $projRoot
 Write-Host "Proje: $projRoot"
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Error "Python bulunamadi. https://www.python.org/downloads/ — PATH'e ekleyin."
+    Write-Error "Python bulunamadi. https://www.python.org/downloads/ - PATH'e ekleyin."
 }
 
 $py = (Get-Command python).Source
@@ -26,7 +26,7 @@ $venvPy = Join-Path $projRoot ".venv\Scripts\python.exe"
 
 if (-not (Test-Path ".\.env")) {
     Copy-Item ".\.env.example" ".\.env" -ErrorAction SilentlyContinue
-    Write-Host "UYARI: .env yok — PC'nizden kopyalayin ve OPENAI_API_KEY girin."
+    Write-Host "UYARI: .env yok - PC'nizden kopyalayin ve OPENAI_API_KEY girin."
 }
 
 Write-Host ""

@@ -652,6 +652,12 @@ def _bot_max_chrome_tabs() -> int:
         return 2
 
 
+def _is_panel_tab_url(url: str) -> bool:
+    """Yerel haber paneli (8765) - bot Chrome bu sekmeyi kapatmasin."""
+    u = (url or "").lower()
+    return ":8765" in u or "localhost:8765" in u
+
+
 def _cdp_list_targets(endpoint: str) -> list[dict[str, Any]]:
     base = endpoint.rstrip("/")
     try:
@@ -697,6 +703,8 @@ def prune_bot_cdp_tabs(*, log: Callable[[str], None] | None = None) -> int:
         url = (t.get("url") or "").lower()
         if url.startswith(("chrome://", "chrome-extension://", "devtools://")):
             continue
+        if _is_panel_tab_url(url):
+            continue
         web_pages.append(t)
 
     max_tabs = _bot_max_chrome_tabs()
@@ -741,6 +749,8 @@ def _safe_close_page(page: Any, endpoint: str) -> None:
 
 def _is_automation_url(url: str) -> bool:
     u = (url or "").lower()
+    if _is_panel_tab_url(u):
+        return False
     if not u or u == "about:blank":
         return True
     return "x.com" in u or "twitter.com" in u
@@ -767,9 +777,12 @@ def _release_automation_page(
         _safe_close_page(page, endpoint)
     elif reused:
         try:
-            page.goto("about:blank", wait_until="commit", timeout=15_000)
+            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=20_000)
         except Exception:
-            pass
+            try:
+                page.goto("about:blank", wait_until="commit", timeout=15_000)
+            except Exception:
+                pass
     prune_bot_cdp_tabs()
 
 

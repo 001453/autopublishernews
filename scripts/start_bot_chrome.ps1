@@ -1,4 +1,4 @@
-# Bot X profili — tek Chrome penceresi + CDP (varsayilan port 9333).
+﻿# Bot X profili - tek Chrome penceresi + CDP (varsayilan port 9333).
 # Kullanim: .\scripts\start_bot_chrome.ps1
 #           .\scripts\start_bot_chrome.ps1 -ForceRestart
 #           .\scripts\start_bot_chrome.ps1 -Url "https://x.com/login"

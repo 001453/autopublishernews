@@ -1,6 +1,7 @@
-# Uzak masaustu / VPS teshis — tum ciktiyi logs\vps_diagnose.txt dosyasina yazar
+﻿# Uzak masaustu / VPS teshis - tum ciktiyi logs\vps_diagnose.txt dosyasina yazar
 # Kullanim (RDP icinde): cd C:\autopublishernews ; .\scripts\diagnose_remote.ps1
 # Sonra logs\vps_diagnose.txt icerigini kopyalayip paylasin.
+# Not: em-dash kullanma. Windows PowerShell 5.1 UTF-8 dosyayi yanlis okuyup tirnak kirar.
 
 $ErrorActionPreference = "Continue"
 $projRoot = Split-Path $PSScriptRoot -Parent
@@ -42,7 +43,9 @@ foreach ($port in @(8765, 9333)) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($conn) {
         $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-        Out-Diag ("Port {0}: ACIK — PID {1} ({2})" -f $port, $conn.OwningProcess, $proc.ProcessName)
+        $started = ""
+        if ($proc) { $started = $proc.StartTime }
+        Out-Diag ("Port {0}: ACIK - PID {1} ({2}) baslangic={3}" -f $port, $conn.OwningProcess, $proc.ProcessName, $started)
     } else {
         Out-Diag ("Port {0}: KAPALI" -f $port)
     }
@@ -56,6 +59,19 @@ try {
     Out-Diag ("CDP yanit: HTTP {0}" -f $r.StatusCode)
 } catch {
     Out-Diag ("CDP hata: {0}" -f $_.Exception.Message)
+}
+
+# Panel HTTP
+Out-Diag ""
+Out-Diag "=== PANEL HTTP ==="
+try {
+    $pr = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/status" -UseBasicParsing -TimeoutSec 8
+    Out-Diag ("Panel /api/status: HTTP {0} boy={1}" -f $pr.StatusCode, $pr.RawContentLength)
+    $body = $pr.Content
+    if ($body.Length -gt 800) { $body = $body.Substring(0, 800) }
+    Out-Diag ("Panel status: {0}" -f $body)
+} catch {
+    Out-Diag ("Panel HTTP hata: {0}" -f $_.Exception.Message)
 }
 
 # venv / python
@@ -74,6 +90,19 @@ Out-Diag "=== CHROME ==="
 $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
 if (-not (Test-Path $chrome)) { $chrome = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe" }
 Out-Diag ("Chrome: {0}" -f (Test-Path $chrome))
+
+# Veri dosyalari
+Out-Diag ""
+Out-Diag "=== VERI ==="
+foreach ($rel in @("posted.sqlite3", "panel_config.json", ".env")) {
+    $fp = Join-Path $projRoot $rel
+    if (Test-Path $fp) {
+        $it = Get-Item $fp
+        Out-Diag ("{0}: {1} byte, yazim={2}" -f $rel, $it.Length, $it.LastWriteTime)
+    } else {
+        Out-Diag ("{0}: YOK" -f $rel)
+    }
+}
 
 # .env (gizli anahtarlar maskelenir)
 Out-Diag ""
@@ -108,11 +137,11 @@ foreach ($tn in @("XNewsBot", "XNewsBotHealth")) {
 # Loglar
 Out-Diag ""
 Out-Diag "=== SON LOGLAR ==="
-foreach ($lf in @("autostart.log", "health.log", "dashboard.err.log")) {
+foreach ($lf in @("autostart.log", "health.log", "dashboard.log", "dashboard.err.log")) {
     $fp = Join-Path $logDir $lf
     Out-Diag "--- $lf ---"
     if (Test-Path $fp) {
-        Get-Content $fp -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Out-Diag "  $_" }
+        Get-Content $fp -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Out-Diag "  $_" }
     } else {
         Out-Diag "  (dosya yok)"
     }
