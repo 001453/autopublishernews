@@ -18,7 +18,7 @@
     "https://news.bitcoin.com/feed/"
   ],
   "poll_interval_minutes": 30,
-  "publish_interval_minutes": 115,
+  "publish_interval_minutes": 120,
   "use_post_queue": true,
   "destination": "x_browser",
   "post_template": "📌 {summary}\n\n{hashtags}",
@@ -40,7 +40,7 @@
   "queue_max_age_hours": 4.0,
   "queue_max_items": 8,
   "x_queue_max_items": 20,
-  "publish_rss_per_rt": 3,
+  "publish_rss_per_rt": 1,
   "skip_usdc_news": true,
   "skip_x_price_posts": true,
   "x_watch_skip_price_posts": false

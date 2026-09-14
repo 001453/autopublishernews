@@ -151,7 +151,7 @@
 
     <section>
       <h2>3 — Yayına hazır (zamanlanmış paylaşım)</h2>
-      <p class="hint" style="margin-top:0" id="queueHint">Yayın karışımı: <strong>1 RT + 3 en yeni haber</strong> (ayarlanabilir). RSS kuyruğuna her turda güncel haber eklenir; yayında her zaman en yeni RSS / en yeni alıntı seçilir. RT yapılamazsa o alıntı atlanır, haber gider. Metni düzenleyin; <strong>Tab</strong> ile kelime tamamlama, <strong>Kaydet</strong> veya alan dışına tıklayınca kayıt.</p>
+      <p class="hint" style="margin-top:0" id="queueHint">Yayın karışımı: <strong>1 RT + 1 en yeni haber</strong> (2 saatte bir; ayarlanabilir). RSS kuyruğuna her turda güncel haber eklenir; yayında her zaman en yeni RSS / en yeni alıntı seçilir. RT veya haber başarısızsa o öğe atlanır, sıradaki gider. Metni düzenleyin; <strong>Tab</strong> ile kelime tamamlama, <strong>Kaydet</strong> veya alan dışına tıklayınca kayıt.</p>
       <div id="queueCards"></div>
       <p class="hint" id="queueEmpty">Kuyruk boş. RSS’ten bir haber seçin veya zamanlayıcıyı başlatın.</p>
       <div class="row" style="margin-top:0.5rem">
@@ -249,7 +249,7 @@
       $("queueMaxAge").value = c.queue_max_age_hours ?? 4;
       $("queueMaxItems").value = c.queue_max_items ?? 8;
       $("xWatchMaxAge").value = c.x_watch_max_age_hours ?? 72;
-      $("rssPerRt").value = c.publish_rss_per_rt ?? 3;
+      $("rssPerRt").value = c.publish_rss_per_rt ?? 1;
       await renderFeedListFromApi();
       renderXWatchList(c.x_watch_accounts || []);
     }
@@ -310,7 +310,7 @@
         if (s.use_post_queue && s.next_publish_at) {
           sched += (sched ? " · " : "") + "Sonraki yayın: " + s.next_publish_at;
           if (s.next_queue_title) sched += " («" + s.next_queue_title + "»)";
-          const per = s.publish_rss_per_rt || 3;
+          const per = s.publish_rss_per_rt || 1;
           if (s.next_publish_kind === "x_quote") {
             sched += " · sıradaki: RT (1 RT + " + per + " haber)";
           } else {
@@ -686,7 +686,7 @@
             rss_max_age_hours: parseFloat($("rssMaxAge").value) || 4,
             queue_max_age_hours: parseFloat($("queueMaxAge").value) || 4,
             queue_max_items: parseInt($("queueMaxItems").value, 10) || 8,
-            publish_rss_per_rt: parseInt($("rssPerRt").value, 10) || 3,
+            publish_rss_per_rt: parseInt($("rssPerRt").value, 10) || 1,
           }),
         });
         setMsg("Ayarlar kaydedildi.");

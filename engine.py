@@ -283,7 +283,7 @@ def default_config() -> dict[str, Any]:
     return {
         "feeds": list(DEFAULT_FEEDS),
         "poll_interval_minutes": 15,
-        "publish_interval_minutes": 30,
+        "publish_interval_minutes": 120,
         "use_post_queue": True,
         "destination": "x_browser",
         "post_template": TEXT_ONLY_TEMPLATE,
@@ -305,7 +305,7 @@ def default_config() -> dict[str, Any]:
         "queue_max_age_hours": 4,
         "queue_max_items": 8,
         "x_queue_max_items": 20,
-        "publish_rss_per_rt": 3,
+        "publish_rss_per_rt": 1,
         "skip_usdc_news": True,
         "skip_x_price_posts": True,
         "x_watch_skip_price_posts": False,
@@ -388,9 +388,9 @@ def _normalize_config_dict(c: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         out["x_queue_max_items"] = 20
     try:
-        out["publish_rss_per_rt"] = max(1, min(20, int(c.get("publish_rss_per_rt", 3))))
+        out["publish_rss_per_rt"] = max(1, min(20, int(c.get("publish_rss_per_rt", 1))))
     except (TypeError, ValueError):
-        out["publish_rss_per_rt"] = 3
+        out["publish_rss_per_rt"] = 1
 
     for flag in ("skip_usdc_news", "skip_x_price_posts", "x_watch_skip_price_posts"):
         v = c.get(flag, out[flag])
@@ -2464,22 +2464,22 @@ def x_queue_max_items(cfg: dict[str, Any] | None = None) -> int:
 
 
 def publish_rss_per_rt(cfg: dict[str, Any] | None = None) -> int:
-    """Her 1 RT (alıntı) sonrası kaç RSS haberi yayınlanacak."""
+    """Her 1 RT (alıntı) sonrası kaç RSS haberi yayınlanacak (varsayılan 1 = sırayla)."""
     c = cfg if cfg is not None else read_panel_config()
     try:
-        return max(1, min(20, int(c.get("publish_rss_per_rt", 3))))
+        return max(1, min(20, int(c.get("publish_rss_per_rt", 1))))
     except (TypeError, ValueError):
-        return 3
+        return 1
 
 
 def _ensure_publish_state(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS publish_state ("
         "id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "rss_since_rt INTEGER NOT NULL DEFAULT 3)"
+        "rss_since_rt INTEGER NOT NULL DEFAULT 0)"
     )
     conn.execute(
-        "INSERT OR IGNORE INTO publish_state (id, rss_since_rt) VALUES (1, 3)"
+        "INSERT OR IGNORE INTO publish_state (id, rss_since_rt) VALUES (1, 0)"
     )
 
 
@@ -2488,7 +2488,7 @@ def _rss_since_rt(conn: sqlite3.Connection) -> int:
     row = conn.execute(
         "SELECT rss_since_rt FROM publish_state WHERE id = 1"
     ).fetchone()
-    return int(row[0]) if row else 3
+    return int(row[0]) if row else 0
 
 
 def _record_publish_mix(is_quote: bool) -> None:
@@ -3586,6 +3586,27 @@ def _drop_failed_quote_item(
     _emit(log, msg)
 
 
+def _drop_failed_rss_item(
+    qid: int,
+    key_url: str,
+    title: str,
+    *,
+    log: Callable[[str], None] | None = None,
+    reason: str = "",
+) -> None:
+    """Başarısız RSS'i kuyruktan sil + posted işaretle (aynı haberde takılı kalmasın)."""
+    with db_session() as conn:
+        mark_posted(conn, key_url, title)
+        conn.execute("DELETE FROM post_queue WHERE id = ?", (qid,))
+        conn.commit()
+    tip = (title or key_url or "")[:60]
+    msg = f"RSS atlandı (yayın başarısız): {tip}"
+    if reason:
+        msg += f" — {reason}"
+    msg += ". Sıradaki gönderi deneniyor."
+    _emit(log, msg)
+
+
 def publish_one_from_queue(
     *,
     log: Callable[[str], None] | None = None,
@@ -3593,8 +3614,8 @@ def publish_one_from_queue(
 ) -> int:
     """Kuyruğun başındaki 1 gönderiyi yayınlar. 0=kuyruk boş, 1=başarılı, 2=yayın hatası.
 
-    Karışım: 1 RT (alıntı) + N en yeni RSS. RT edilemezse kuyruktan düşülür ve
-    aynı turda sıradaki öğe (tercihen haber, yoksa başka alıntı) denenir.
+    Karışım: 1 RT (alıntı) + N RSS (varsayılan N=1). RT/RSS başarısızsa kuyruktan
+    düşülür ve aynı turda sıradaki öğe denenir (aynı haberde döngü yok).
     """
     load_dotenv()
     maintain_post_queue(log=log)
@@ -3654,16 +3675,17 @@ def publish_one_from_queue(
         else:
             post_tweet_browser(text_x, log=log)
 
-    def _skip_quote_and_try_rss(reason: str) -> int:
-        if not is_quote:
-            return 2
-        _drop_failed_quote_item(qid, key_url, title, log=log, reason=reason)
+    def _skip_and_try_next(reason: str) -> int:
+        if is_quote:
+            _drop_failed_quote_item(qid, key_url, title, log=log, reason=reason)
+        else:
+            _drop_failed_rss_item(qid, key_url, title, log=log, reason=reason)
         if _skip_budget <= 0:
-            _emit(log, "Alıntı atlama limiti doldu; bu turda başka öğe denenmedi.")
+            _emit(log, "Atlama limiti doldu; bu turda başka öğe denenmedi.")
             return 2
         nxt = peek_queue_head()
         if not nxt:
-            _emit(log, "Alıntı atlandı; yayınlanacak başka öğe yok.")
+            _emit(log, "Öğe atlandı; yayınlanacak başka öğe yok.")
             return 0
         return publish_one_from_queue(log=log, _skip_budget=_skip_budget - 1)
 
@@ -3673,7 +3695,7 @@ def publish_one_from_queue(
         _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
         return 3
     except QuotePublishSkipped as ex:
-        return _skip_quote_and_try_rss(str(ex))
+        return _skip_and_try_next(str(ex))
     except (PlaywrightTimeout, Exception) as ex:
         if _is_cdp_connect_timeout(ex) and recover_bot_chrome_after_cdp_failure(log=log):
             try:
@@ -3682,17 +3704,11 @@ def publish_one_from_queue(
                 _emit(log, "Kuyrukta kaldı (manuel gönderim): " + (title[:60] or key_url))
                 return 3
             except QuotePublishSkipped as ex2:
-                return _skip_quote_and_try_rss(str(ex2))
+                return _skip_and_try_next(str(ex2))
             except PlaywrightTimeout as ex2:
-                if is_quote:
-                    return _skip_quote_and_try_rss(str(ex2))
-                _emit(log, "Tarayıcı zaman aşımı: " + str(ex2))
-                return 2
+                return _skip_and_try_next(str(ex2))
             except Exception as ex2:
-                if is_quote:
-                    return _skip_quote_and_try_rss(str(ex2))
-                _emit(log, "Gönderim hatası: " + str(ex2))
-                return 2
+                return _skip_and_try_next(str(ex2))
             # CDP recover sonrası başarı
             _finalize_success()
             if is_quote:
@@ -3700,13 +3716,7 @@ def publish_one_from_queue(
             else:
                 _emit(log, "Tweet gönderildi (kuyruk): " + key_url)
             return 1
-        if is_quote:
-            return _skip_quote_and_try_rss(str(ex))
-        if isinstance(ex, PlaywrightTimeout):
-            _emit(log, "Tarayıcı zaman aşımı: " + str(ex))
-            return 2
-        _emit(log, "Gönderim hatası: " + str(ex))
-        return 2
+        return _skip_and_try_next(str(ex))
 
     _finalize_success()
     if is_quote:

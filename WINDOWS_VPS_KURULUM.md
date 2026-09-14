@@ -137,7 +137,7 @@ cd C:\autopublishernews
 Tarayıcıda (sunucunun içinde): **http://127.0.0.1:8765**
 
 - Zamanlayıcı otomatik başlamalı (`AUTO_START_SCHEDULER=1`).
-- Logda: `Otomatik başlatma: zamanlayıcı açıldı` ve `ilk otomatik yayın ~115 dk sonra`.
+- Logda: `Otomatik başlatma: zamanlayıcı açıldı` ve `ilk otomatik yayın ~120 dk sonra`.
 
 ### Adım 15: Test
 Panelden:
@@ -184,7 +184,7 @@ Sadece sizin IP’nizden erişim önerilir.
 | `dashboard.py` çalışmıyor | `.\.venv\Scripts\python.exe dashboard.py` kullanın |
 | Port 8765 dolu | `Get-NetTCPConnection -LocalPort 8765` → ilgili süreci kapatın |
 | X gönderemiyor | Bot Chrome açık mı, CDP 9333, X girişi var mı |
-| 15 dk’da paylaşıyor | `.env` içinde `PUBLISH_INTERVAL_MINUTES=115` olmalı; paneli yeniden başlatın |
+| 15 dk’da paylaşıyor | `.env` içinde `PUBLISH_INTERVAL_MINUTES=120` olmalı; paneli yeniden başlatın |
 | Kaspersky / AV | Proje klasörü + `start_bot_chrome.ps1` istisna |
 
 ---
