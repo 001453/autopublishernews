@@ -48,18 +48,39 @@ function Test-CdpHealthy {
     }
 }
 
+function Test-PanelHttpHealthy {
+    try {
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/health" -UseBasicParsing -TimeoutSec 8
+        return ($r.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
 if ($ForceRestart) {
     Write-Log "ForceRestart: 8765 ve 9333 kapatiliyor."
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and ($_.CommandLine -like '*dashboard.py*') } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Get-NetTCPConnection -LocalPort 8765, 9333 -ErrorAction SilentlyContinue |
         ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 3
 }
 
-# Panel zaten aciksa atla (ForceRestart sonrasi kapali olmali)
-$panelUp = Test-PortOpen 8765
-if ($panelUp) {
-    Write-Log "Panel zaten calisiyor (8765)."
+# Panel: port yetmez; HTTP /api/health zorunlu
+$panelHttp = Test-PanelHttpHealthy
+if ($panelHttp -and -not $ForceRestart) {
+    Write-Log "Panel HTTP saglikli (8765)."
 } else {
+    if ((Test-PortOpen 8765) -and -not $panelHttp) {
+        Write-Log "8765 port acik ama HTTP olu; dashboard process temizleniyor."
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and ($_.CommandLine -like '*dashboard.py*') } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 2
+    }
     $py = Join-Path $projRoot ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
         Write-Log "HATA: venv yok: $py"
@@ -74,7 +95,7 @@ if ($panelUp) {
     $panelReady = $false
     foreach ($i in 1..20) {
         Start-Sleep -Seconds 2
-        if (Test-PortOpen 8765) {
+        if (Test-PanelHttpHealthy) {
             $panelReady = $true
             break
         }
@@ -82,7 +103,7 @@ if ($panelUp) {
     if ($panelReady) {
         Write-Log "Panel baslatildi -> http://127.0.0.1:8765"
     } else {
-        Write-Log "HATA: Panel 8765 acilmadi. logs\dashboard.log ve dashboard.err.log kontrol edin."
+        Write-Log "HATA: Panel 8765 HTTP acilmadi. logs\dashboard.log ve dashboard.err.log kontrol edin."
     }
 }
 

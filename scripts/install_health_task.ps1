@@ -53,8 +53,9 @@ if (-not $check) {
 
 Write-Host ""
 Write-Host "Gorev olusturuldu: $taskName (durum: $($check.State))"
-Write-Host "Aralik: her 15 dakika"
+Write-Host "Aralik: her 15 dakika (HTTP /api/health + CDP)"
 Write-Host "Script: $healthScript"
 Write-Host "Log: $projRoot\logs\health.log"
 Write-Host ""
 Write-Host "Test: Start-ScheduledTask -TaskName '$taskName'"
+Write-Host "Tam paket: .\scripts\install_heal_all.ps1"
