@@ -128,6 +128,7 @@ if ($panelHttp) {
 }
 
 if ($panelHttp -and $cdpHealthy) {
+    Write-Log "OK: panel HTTP + CDP saglikli; zamanlayici kontrol edildi."
     exit 0
 }
 
