@@ -88,7 +88,7 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 AUTO_START_SCHEDULER=1
 POLL_INTERVAL_MINUTES=15
-PUBLISH_INTERVAL_MINUTES=115
+PUBLISH_INTERVAL_MINUTES=120
 USE_EXISTING_CHROME=0
 BOT_CDP_PORT=9333
 HEADLESS=0
@@ -97,7 +97,7 @@ BROWSER_CHANNEL=chrome
 
 ### Adım 10: `panel_config.json`
 PC’deki `panel_config.json` dosyasını da aynı şekilde `C:\autopublishernews\` içine kopyalayın  
-(feed listesi, X hesapları, 115 dk yayın ayarı burada da durur).
+(feed listesi, X hesapları, 120 dk yayın / 1 RT + 1 haber ayarı burada da durur).
 
 ### Adım 11: X oturumu (`x_profile`) — iki yol
 
