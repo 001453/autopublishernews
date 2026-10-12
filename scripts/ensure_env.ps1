@@ -195,6 +195,15 @@ if ($fallbackKey) {
     }
 }
 
+# Yedek: GEMINI_API_KEY ayristirici tarafindan kacirildiysa ham dosyadan oku
+if (-not $map.ContainsKey("GEMINI_API_KEY") -or -not $map["GEMINI_API_KEY"]) {
+    if (Test-Path $envPath) {
+        $rawText = [System.IO.File]::ReadAllText($envPath)
+        $gm = [regex]::Match($rawText, '(?m)^\s*GEMINI_API_KEY\s*=\s*(\S+)')
+        if ($gm.Success) { $map["GEMINI_API_KEY"] = $gm.Groups[1].Value.Trim('"', "'") }
+    }
+}
+
 if ($map.ContainsKey("POLL_INTERVAL_MINUTES") -and $map["POLL_INTERVAL_MINUTES"] -eq "15") {
     $map["POLL_INTERVAL_MINUTES"] = "30"
 }
