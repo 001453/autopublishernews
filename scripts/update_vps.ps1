@@ -28,12 +28,11 @@ Write-Host ".env kontrol..."
 & "$PSScriptRoot\ensure_env.ps1"
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Write-Host "DURDURULDU: OPENAI_API_KEY .env dosyasinda yok." -ForegroundColor Red
-    Write-Host "Once anahtari ekleyin, sonra tekrar calistirin:" -ForegroundColor Yellow
-    Write-Host "  .\scripts\set_openai_key.ps1" -ForegroundColor Cyan
+    Write-Host "DURDURULDU: AI anahtari .env dosyasinda yok (AI_PROVIDER=gemini ise GEMINI_API_KEY)." -ForegroundColor Red
+    Write-Host "Once anahtari ekleyin (.env icinde GEMINI_API_KEY=AIza...), sonra tekrar calistirin:" -ForegroundColor Yellow
+    Write-Host "  notepad .env" -ForegroundColor Cyan
     Write-Host "  .\scripts\update_vps.ps1 -SkipGit" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "PC'nizdeki anahtari kopyalayip VPS'te yapistirin (sk-proj-...)" -ForegroundColor Yellow
     exit 1
 }
 Get-NetTCPConnection -LocalPort 8765,9333 -ErrorAction SilentlyContinue |

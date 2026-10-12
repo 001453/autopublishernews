@@ -92,6 +92,79 @@ def _openai_handle_api_error(log: Callable[[str], None] | None, ex: Exception) -
     return False
 
 
+def _ai_provider() -> str:
+    """AI_PROVIDER=gemini (varsayilan) veya openai."""
+    return (os.environ.get("AI_PROVIDER") or "gemini").strip().lower()
+
+
+def _llm_key() -> str:
+    if _ai_provider() == "openai":
+        return (os.environ.get("OPENAI_API_KEY") or "").strip()
+    return (os.environ.get("GEMINI_API_KEY") or "").strip()
+
+
+def _llm_model() -> str:
+    if _ai_provider() == "openai":
+        return (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    return (os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest").strip()
+
+
+def _llm_post(payload: dict[str, Any], timeout: float) -> str:
+    """OpenAI benzeri payload (messages/max_tokens/temperature) -> secili saglayici.
+    Hata durumunda urllib HTTPError firlatir (429 yakalama mevcut mantikla calisir)."""
+    key = _llm_key()
+    messages = payload.get("messages") or []
+    system = "\n".join(m.get("content", "") for m in messages if m.get("role") == "system")
+    user = "\n".join(m.get("content", "") for m in messages if m.get("role") != "system")
+    max_tokens = int(payload.get("max_tokens") or 300)
+    temperature = float(payload.get("temperature") or 0.4)
+    model = _llm_model()
+
+    if _ai_provider() == "openai":
+        body = {**payload, "model": model}
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "User-Agent": "rss-news-bot/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        return (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+
+    # Gemini generateContent (x-goog-api-key basligi; anahtar URL'de tasinmaz)
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {
+            "maxOutputTokens": max(max_tokens * 3, 1024),
+            "temperature": temperature,
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": key,
+            "User-Agent": "rss-news-bot/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+    cands = raw.get("candidates") or []
+    if not cands:
+        return ""
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    return "".join(str(p.get("text", "")) for p in parts)
+
+
 def _rss_preview_ai_budget() -> int:
     raw = (os.environ.get("RSS_PREVIEW_AI_MAX") or "1").strip()
     try:
@@ -1475,8 +1548,7 @@ def openai_x_quote_bundle(
 ) -> tuple[str, str] | None:
     """X alıntısı: yayına hazır Türkçe gövde (birebir çeviri değil)."""
     load_dotenv()
-    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not key:
+    if not _llm_key():
         return None
     if _openai_in_cooldown():
         return None
@@ -1516,20 +1588,7 @@ def openai_x_quote_bundle(
         "temperature": 0.55 if (strict or editorial_retry) else 0.5,
     }
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-                "User-Agent": "rss-news-bot/1.0",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=70) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-        out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        out = _llm_post(payload, timeout=70)
         parsed = _parse_x_quote_publish_bundle(out, cap=cap)
         if parsed and not _quote_publish_too_literal(body_text, parsed[1]):
             _openai_clear_cooldown()
@@ -1551,8 +1610,7 @@ def openai_turkish_bundle(
     strict: bool = False,
 ) -> tuple[str, str] | None:
     load_dotenv()
-    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not key:
+    if not _llm_key():
         return None
     if _openai_in_cooldown():
         return None
@@ -1591,20 +1649,7 @@ def openai_turkish_bundle(
         "temperature": 0.3 if strict else 0.4,
     }
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-                "User-Agent": "rss-news-bot/1.0",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=70) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-        out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        out = _llm_post(payload, timeout=70)
         parsed = _parse_turkish_bundle(out, cap=cap)
         if parsed:
             _openai_clear_cooldown()
@@ -1923,8 +1968,7 @@ def openai_topic_hashtags(
     log: Callable[[str], None] | None,
 ) -> str | None:
     load_dotenv()
-    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not key:
+    if not _llm_key():
         return None
     if _openai_in_cooldown():
         return None
@@ -1951,20 +1995,7 @@ def openai_topic_hashtags(
         "temperature": 0.4,
     }
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-                "User-Agent": "rss-news-bot/1.0",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-        out = (raw.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        out = _llm_post(payload, timeout=45)
         ctx = f"{(title or '').strip()} {(summary or '').strip()}"
         line = _format_hashtags(_parse_hashtag_response(out), context=ctx)
         if line and line.count("#") >= 1:
@@ -2109,9 +2140,9 @@ def resolve_turkish_title_summary(
                 conn.commit()
             return out
     load_dotenv()
-    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+    if not _llm_key():
         raise TurkishContentRequired(
-            "İngilizce kaynak için .env içinde OPENAI_API_KEY gerekli."
+            "İngilizce kaynak için .env içinde GEMINI_API_KEY (veya AI_PROVIDER=openai ise OPENAI_API_KEY) gerekli."
         )
     raise TurkishContentRequired("Türkçe özet üretilemedi; log kayıtlarına bakın.")
 
@@ -2171,9 +2202,9 @@ def resolve_x_quote_turkish(
             conn.commit()
         return title_tr, bundle[1]
     load_dotenv()
-    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+    if not _llm_key():
         raise TurkishContentRequired(
-            "X alıntısı için .env içinde OPENAI_API_KEY gerekli."
+            "X alıntısı için .env içinde GEMINI_API_KEY (veya AI_PROVIDER=openai ise OPENAI_API_KEY) gerekli."
         )
     if _openai_in_cooldown():
         raise TurkishContentRequired(

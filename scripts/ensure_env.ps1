@@ -1,4 +1,4 @@
-# .env: tekillestir + eksik anahtarlar (OPENAI_API_KEY silinmez, ustte kalir).
+# .env: tekillestir + eksik anahtarlar (API anahtarlari silinmez; AI_PROVIDER kullanici tercihine birakilir).
 # Kullanim: cd C:\autopublishernews ; .\scripts\ensure_env.ps1
 
 $ErrorActionPreference = "Stop"
@@ -137,6 +137,8 @@ if (-not (Test-Path $envPath)) {
 }
 
 $desired = [ordered]@{
+    AI_PROVIDER              = "gemini"
+    GEMINI_MODEL             = "gemini-flash-lite-latest"
     OPENAI_MODEL             = "gpt-4o-mini"
     OPENAI_COOLDOWN_SECONDS  = "300"
     RSS_PREVIEW_AI_MAX       = "1"
@@ -202,40 +204,38 @@ foreach ($k in $desired.Keys) {
         $map[$k] = $desired[$k]
         Write-Host "+ $k=$($desired[$k])"
     }
-    elseif ($k -ne "OPENAI_API_KEY" -and $map[$k] -ne $desired[$k]) {
+    elseif ($k -notin @("OPENAI_API_KEY","AI_PROVIDER","GEMINI_MODEL") -and $map[$k] -ne $desired[$k]) {
         $map[$k] = $desired[$k]
         Write-Host "~ $k=$($desired[$k])"
     }
 }
 
-if (-not $map.ContainsKey("OPENAI_API_KEY") -or -not ($map["OPENAI_API_KEY"])) {
+$provider = if ($map.ContainsKey("AI_PROVIDER") -and $map["AI_PROVIDER"]) { $map["AI_PROVIDER"].ToLower() } else { "gemini" }
+$keyName = if ($provider -eq "openai") { "OPENAI_API_KEY" } else { "GEMINI_API_KEY" }
+Write-Host "AI saglayici: $provider (anahtar: $keyName)"
+
+if (-not $map.ContainsKey($keyName) -or -not ($map[$keyName])) {
     Write-Host ""
-    Write-Host "HATA: OPENAI_API_KEY .env icinde okunamadi." -ForegroundColor Red
+    Write-Host "HATA: $keyName .env icinde okunamadi." -ForegroundColor Red
     Write-Host "  Dosya: $envPath"
     Write-Host "  Bulunan anahtarlar: $(if ($map.Keys.Count) { ($map.Keys | Sort-Object) -join ', ' } else { '(hicbiri)' })"
     Write-Host ""
-    Write-Host "  Muhtemel nedenler:"
-    Write-Host "  - Notepad'de .env.example acik (gercek dosya .env olmali)"
-    Write-Host "  - Satir basinda # var (yorum satiri sayilir)"
-    Write-Host "  - Anahtar iki satira bolunmus veya bos OPENAI_API_KEY= satiri var"
-    Write-Host ""
-    Write-Host "  Cozum:"
-    Write-Host "  .\scripts\set_openai_key.ps1"
-    Write-Host "  veya notepad $envPath -> en uste tek satir:"
-    Write-Host "  OPENAI_API_KEY=sk-proj-..."
+    Write-Host "  Cozum: .env dosyasina tek satir ekleyin:"
+    Write-Host "  GEMINI_API_KEY=AIza...   (AI Studio anahtari)"
+    Write-Host "  veya AI_PROVIDER=openai ise OPENAI_API_KEY=sk-proj-..."
     Write-Host "Dosya degistirilmedi (anahtar silinmesin diye)."
     exit 1
 }
 
-$val = $map["OPENAI_API_KEY"]
-if ($val -notmatch '^sk-') {
+$val = $map[$keyName]
+if ($keyName -eq "OPENAI_API_KEY" -and $val -notmatch '^sk-') {
     Write-Warning "OPENAI_API_KEY sk- ile baslamiyor - anahtar bozuk olabilir."
 }
 if ($val.Length -gt 220) {
-    Write-Warning "OPENAI_API_KEY cok uzun ($($val.Length)) - .\scripts\set_openai_key.ps1 ile tekrar girin."
+    Write-Warning "$keyName cok uzun ($($val.Length)) - anahtar bozuk olabilir."
 }
 if ($val -match '\s') {
-    Write-Warning "OPENAI_API_KEY bosluk iceriyor - tek satir olmali."
+    Write-Warning "$keyName bosluk iceriyor - tek satir olmali."
 }
 
 $out = [System.Collections.Generic.List[string]]@()
@@ -244,16 +244,17 @@ if ($headerComments.Count -gt 0) {
     $out.Add("")
 }
 
-$out.Add("OPENAI_API_KEY=$($map['OPENAI_API_KEY'])")
+if ($map.ContainsKey("OPENAI_API_KEY") -and $map["OPENAI_API_KEY"]) { $out.Add("OPENAI_API_KEY=$($map['OPENAI_API_KEY'])") }
+if ($map.ContainsKey("GEMINI_API_KEY") -and $map["GEMINI_API_KEY"]) { $out.Add("GEMINI_API_KEY=$($map['GEMINI_API_KEY'])") }
 
 $keyOrder = @(
-    "OPENAI_MODEL", "OPENAI_COOLDOWN_SECONDS", "RSS_PREVIEW_AI_MAX",
+    "AI_PROVIDER", "GEMINI_MODEL", "OPENAI_MODEL", "OPENAI_COOLDOWN_SECONDS", "RSS_PREVIEW_AI_MAX",
     "AUTO_START_SCHEDULER", "POLL_INTERVAL_MINUTES", "PUBLISH_INTERVAL_MINUTES",
     "USE_EXISTING_CHROME", "BOT_CDP_PORT", "BOT_MAX_CHROME_TABS", "HEADLESS", "BROWSER_CHANNEL",
     "DISCORD_WEBHOOK_URL"
 )
 foreach ($k in $keyOrder) {
-    if ($map.ContainsKey($k) -and $k -ne "OPENAI_API_KEY") {
+    if ($map.ContainsKey($k) -and $k -ne "OPENAI_API_KEY" -and $k -ne "GEMINI_API_KEY") {
         $out.Add("$k=$($map[$k])")
     }
 }
@@ -261,6 +262,7 @@ foreach ($k in $keyOrder) {
 $written = @{}
 foreach ($k in $keyOrder) { $written[$k] = $true }
 $written["OPENAI_API_KEY"] = $true
+$written["GEMINI_API_KEY"] = $true
 foreach ($k in $map.Keys) {
     if (-not $written.ContainsKey($k)) {
         $out.Add("$k=$($map[$k])")
